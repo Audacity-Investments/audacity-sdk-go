@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Audacity-Investments/audacity-sdk-go"
@@ -28,7 +29,7 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) (*audacityruntime.Cli
 	client := audacityruntime.New(audacityruntime.Options{
 		APIKey:     "test-key",
 		BaseURL:    srv.URL,
-		MaxRetries: 0,
+		MaxRetries: audacityruntime.NoRetries,
 	})
 	return client, srv
 }
@@ -63,7 +64,8 @@ func TestConverseHappyPath(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]interface{}
 		if err := json.Unmarshal(body, &req); err != nil {
-			t.Fatalf("parse request body: %v", err)
+			t.Errorf("parse request body: %v", err)
+			return
 		}
 		if req["model"] != "gpt-5.4-mini" {
 			t.Errorf("model = %v, want gpt-5.4-mini", req["model"])
@@ -149,7 +151,8 @@ func TestConverseToolRoundTrip(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]interface{}
 		if err := json.Unmarshal(body, &req); err != nil {
-			t.Fatalf("parse request: %v", err)
+			t.Errorf("parse request: %v", err)
+			return
 		}
 
 		// Verify tools were serialised correctly
@@ -255,7 +258,8 @@ func TestToolResultSerialization(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]interface{}
 		if err := json.Unmarshal(body, &req); err != nil {
-			t.Fatalf("parse request: %v", err)
+			t.Errorf("parse request: %v", err)
+			return
 		}
 
 		messages, _ := req["messages"].([]interface{})
@@ -400,9 +404,12 @@ func TestMissingAPIKey(t *testing.T) {
 // ─────────────────────────────────────────────────────────────
 
 func TestUserAgent(t *testing.T) {
+	var mu sync.Mutex
 	var gotUA string
 	handler := func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		gotUA = r.Header.Get("User-Agent")
+		mu.Unlock()
 		jsonResponse(t, w, 200, map[string]interface{}{
 			"choices": []map[string]interface{}{{
 				"index":         0,
@@ -417,6 +424,8 @@ func TestUserAgent(t *testing.T) {
 		ModelId:  audacity.String("gpt-5.4-mini"),
 		Messages: []types.Message{{Role: types.ConversationRoleUser, Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: "hi"}}}},
 	})
+	mu.Lock()
+	defer mu.Unlock()
 	if !strings.HasPrefix(gotUA, "audacity-sdk-go/") {
 		t.Errorf("User-Agent = %q, want prefix audacity-sdk-go/", gotUA)
 	}

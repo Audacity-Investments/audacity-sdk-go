@@ -53,7 +53,7 @@ func (*ConverseStreamOutputMemberMetadata) isConverseStreamOutput() {}
 
 // MessageStartEvent is the payload for the messageStart stream event.
 type MessageStartEvent struct {
-	Role string
+	Role ConversationRole
 }
 
 // ContentBlockStartEvent is the payload for the contentBlockStart stream event.
@@ -118,7 +118,7 @@ type ContentBlockStopEvent struct {
 
 // MessageStopEvent is the payload for the messageStop stream event.
 type MessageStopEvent struct {
-	StopReason string
+	StopReason StopReason
 }
 
 // ConverseStreamMetadataEvent is the payload for the metadata stream event.

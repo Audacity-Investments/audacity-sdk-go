@@ -86,7 +86,7 @@ func newStreamClient(serverURL string) *audacityruntime.Client {
 	return audacityruntime.New(audacityruntime.Options{
 		APIKey:     "test-key",
 		BaseURL:    serverURL,
-		MaxRetries: 0,
+		MaxRetries: audacityruntime.NoRetries,
 	})
 }
 

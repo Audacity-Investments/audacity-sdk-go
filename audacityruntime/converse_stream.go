@@ -65,6 +65,13 @@ type ConverseStreamEventStream struct {
 	once sync.Once
 	done chan struct{}
 	resp *http.Response
+
+	// ctx is the stream's request context (derived from the caller's);
+	// cancel releases the underlying HTTP request.  Either Close() or
+	// cancelling the caller's context unblocks the pump and frees the
+	// connection — abandoned streams do not leak goroutines.
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // Events returns a read-only channel that receives stream events in order.
@@ -81,11 +88,12 @@ func (s *ConverseStreamEventStream) Err() error {
 	return s.err
 }
 
-// Close stops the stream and releases the underlying HTTP response body.
-// Safe to call more than once.
+// Close stops the stream, cancels the underlying HTTP request, and releases
+// the response body.  Safe to call more than once.
 func (s *ConverseStreamEventStream) Close() error {
 	s.once.Do(func() {
 		close(s.done)
+		s.cancel()
 	})
 	return s.resp.Body.Close()
 }
@@ -108,10 +116,10 @@ func (c *Client) ConverseStream(ctx context.Context, input *ConverseStreamInput)
 	// so the conversion is legal and lets both operations share one builder.
 	body, err := buildRequestBody((*ConverseInput)(input), true)
 	if err != nil {
-		return nil, &types.SdkError{Message: "failed to build request body", Err: err}
+		return nil, err
 	}
 
-	resp, startTime, err := c.doConverseStreamWithRetry(ctx, body)
+	resp, sctx, cancel, startTime, err := c.doConverseStreamWithRetry(ctx, body)
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +128,8 @@ func (c *Client) ConverseStream(ctx context.Context, input *ConverseStreamInput)
 		events: make(chan types.ConverseStreamOutput, 64),
 		done:   make(chan struct{}),
 		resp:   resp,
+		ctx:    sctx,
+		cancel: cancel,
 	}
 
 	go stream.pump(startTime)
@@ -136,14 +146,34 @@ var (
 	sseDone       = []byte("[DONE]")
 )
 
+// maxSSELineBytes caps a single SSE line at 32 MiB (spec §1: SDKs must
+// tolerate lines of at least 32 MiB and may abort beyond that).
+const maxSSELineBytes = 32 << 20
+
+// streamError builds a ModelStreamErrorException for a mid-stream failure,
+// preserving the underlying cause for errors.Is/errors.As.
+func streamError(msg string, cause error) *types.ModelStreamErrorException {
+	if cause != nil {
+		msg = msg + ": " + cause.Error()
+	}
+	return &types.ModelStreamErrorException{ModelErrorException: types.ModelErrorException{APIError: types.APIError{
+		Message:   msg,
+		ErrorCode: "STREAM_ERROR",
+		Err:       cause,
+	}}}
+}
+
 // pump runs in a goroutine: reads SSE lines from resp.Body, drives the state
 // machine, and sends typed events on the channel.
 func (s *ConverseStreamEventStream) pump(startTime time.Time) {
 	defer close(s.events)
+	// Release the request context once the body has been fully consumed (or
+	// the pump aborts).  Idempotent with Close().
+	defer s.cancel()
 
 	scanner := bufio.NewScanner(s.resp.Body)
 	// Small initial buffer; allow growth for events with big tool-input JSON.
-	scanner.Buffer(make([]byte, 64<<10), 1<<20)
+	scanner.Buffer(make([]byte, 64<<10), maxSSELineBytes)
 
 	sm := &streamSM{
 		blocks: make(map[int]blockEntry),
@@ -182,7 +212,8 @@ func (s *ConverseStreamEventStream) pump(startTime time.Time) {
 
 		var chunk oaiChunk
 		if err := json.Unmarshal(payload, &chunk); err != nil {
-			s.setErr(&types.SdkError{Message: "failed to parse SSE chunk", Err: err})
+			// Decode failure after the first SSE byte → stream error (spec §1).
+			s.setErr(streamError("failed to parse SSE chunk", err))
 			return
 		}
 
@@ -200,25 +231,24 @@ func (s *ConverseStreamEventStream) pump(startTime time.Time) {
 	}
 
 	if scanErr := scanner.Err(); scanErr != nil {
-		s.setErr(&types.ModelStreamErrorException{APIError: types.APIError{
-			Message:   "stream read error: " + scanErr.Error(),
-			ErrorCode: "STREAM_ERROR",
-		}})
+		// Transport failure (or an over-32MiB line, surfacing as
+		// bufio.ErrTooLong) after the first SSE byte — the cause is kept in
+		// the chain so errors.Is(err, context.Canceled) works.
+		s.setErr(streamError("stream read error", scanErr))
 		return
 	}
 
 	// EOF without [DONE] = unexpected connection drop.
-	s.setErr(&types.ModelStreamErrorException{APIError: types.APIError{
-		Message:   "stream ended without [DONE]",
-		ErrorCode: "STREAM_ERROR",
-	}})
+	s.setErr(streamError("stream ended without [DONE]", nil))
 }
 
-// send delivers an event, or returns immediately if Close() was called.
+// send delivers an event, or returns immediately once the request context is
+// cancelled — which Close() always does — so an abandoned consumer cannot
+// wedge the pump on a full channel.
 func (s *ConverseStreamEventStream) send(ev types.ConverseStreamOutput) {
 	select {
 	case s.events <- ev:
-	case <-s.done:
+	case <-s.ctx.Done():
 	}
 }
 
@@ -239,6 +269,7 @@ type blockEntry struct {
 
 type streamSM struct {
 	messageStarted bool
+	messageStopped bool
 	// blocks keyed by the tool-call index (int); text block uses key -1.
 	blocks       map[int]blockEntry
 	nextIndex    int32
@@ -246,6 +277,17 @@ type streamSM struct {
 }
 
 const textBlockKey = -1
+
+// emitMessageStart emits messageStart once.
+func (sm *streamSM) emitMessageStart(s *ConverseStreamEventStream) {
+	if sm.messageStarted {
+		return
+	}
+	s.send(&types.ConverseStreamOutputMemberMessageStart{
+		Value: types.MessageStartEvent{Role: types.ConversationRoleAssistant},
+	})
+	sm.messageStarted = true
+}
 
 func (sm *streamSM) process(chunk oaiChunk, s *ConverseStreamEventStream) error {
 	// Step 1 — inline stream error
@@ -258,15 +300,13 @@ func (sm *streamSM) process(chunk oaiChunk, s *ConverseStreamEventStream) error 
 		choice = &chunk.Choices[0]
 	}
 
-	// Step 2 — messageStart (once, on first chunk that carries a choice)
-	if !sm.messageStarted && choice != nil {
-		s.send(&types.ConverseStreamOutputMemberMessageStart{
-			Value: types.MessageStartEvent{Role: "assistant"},
-		})
-		sm.messageStarted = true
+	// Step 2 — messageStart (once, on the first chunk that carries a delta,
+	// even an empty one — spec §3 step 2)
+	if choice != nil && choice.Delta != nil {
+		sm.emitMessageStart(s)
 	}
 
-	if choice != nil {
+	if choice != nil && choice.Delta != nil {
 		delta := choice.Delta
 
 		// Step 3 — text delta
@@ -325,37 +365,41 @@ func (sm *streamSM) process(chunk oaiChunk, s *ConverseStreamEventStream) error 
 				})
 			}
 		}
+	}
 
-		// Step 5 — finish_reason → emit contentBlockStop* + messageStop
-		if choice.FinishReason != nil {
-			stopReason := mapFinishReason(choice.FinishReason)
+	// Step 5 — finish_reason → contentBlockStop* + messageStop.  Processed
+	// unconditionally, even for a chunk with no delta key, and at most once
+	// (spec §3 step 5).  messageStop is always preceded by messageStart.
+	if choice != nil && choice.FinishReason != nil && !sm.messageStopped {
+		sm.emitMessageStart(s)
+		stopReason := mapFinishReason(choice.FinishReason)
 
-			// Collect open blocks sorted by ascending contentBlockIndex.
-			type kv struct {
-				key   int
-				index int32
-			}
-			var open []kv
-			for k, b := range sm.blocks {
-				if !b.closed {
-					open = append(open, kv{k, b.contentBlockIndex})
-				}
-			}
-			sort.Slice(open, func(i, j int) bool { return open[i].index < open[j].index })
-
-			for _, o := range open {
-				s.send(&types.ConverseStreamOutputMemberContentBlockStop{
-					Value: types.ContentBlockStopEvent{ContentBlockIndex: o.index},
-				})
-				e := sm.blocks[o.key]
-				e.closed = true
-				sm.blocks[o.key] = e
-			}
-
-			s.send(&types.ConverseStreamOutputMemberMessageStop{
-				Value: types.MessageStopEvent{StopReason: stopReason},
-			})
+		// Collect open blocks sorted by ascending contentBlockIndex.
+		type kv struct {
+			key   int
+			index int32
 		}
+		var open []kv
+		for k, b := range sm.blocks {
+			if !b.closed {
+				open = append(open, kv{k, b.contentBlockIndex})
+			}
+		}
+		sort.Slice(open, func(i, j int) bool { return open[i].index < open[j].index })
+
+		for _, o := range open {
+			s.send(&types.ConverseStreamOutputMemberContentBlockStop{
+				Value: types.ContentBlockStopEvent{ContentBlockIndex: o.index},
+			})
+			e := sm.blocks[o.key]
+			e.closed = true
+			sm.blocks[o.key] = e
+		}
+
+		s.send(&types.ConverseStreamOutputMemberMessageStop{
+			Value: types.MessageStopEvent{StopReason: stopReason},
+		})
+		sm.messageStopped = true
 	}
 
 	// Step 6 — usage chunk (often post-finish, before [DONE])

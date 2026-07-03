@@ -29,7 +29,7 @@ func TestErrorShapeA_AccessDenied(t *testing.T) {
 	defer srv.Close()
 
 	client := audacityruntime.New(audacityruntime.Options{
-		APIKey: "bad-key", BaseURL: srv.URL, MaxRetries: 0,
+		APIKey: "bad-key", BaseURL: srv.URL, MaxRetries: audacityruntime.NoRetries,
 	})
 	_, err := client.Converse(context.Background(), &audacityruntime.ConverseInput{
 		ModelId:  audacity.String("gpt-5.4-mini"),
@@ -59,7 +59,7 @@ func TestErrorShapeA_Throttling(t *testing.T) {
 	defer srv.Close()
 
 	client := audacityruntime.New(audacityruntime.Options{
-		APIKey: "test-key", BaseURL: srv.URL, MaxRetries: 0,
+		APIKey: "test-key", BaseURL: srv.URL, MaxRetries: audacityruntime.NoRetries,
 	})
 	_, err := client.Converse(context.Background(), &audacityruntime.ConverseInput{
 		ModelId:  audacity.String("gpt-5.4-mini"),
@@ -84,7 +84,7 @@ func TestErrorShapeB_ModelNotAllowed(t *testing.T) {
 	defer srv.Close()
 
 	client := audacityruntime.New(audacityruntime.Options{
-		APIKey: "test-key", BaseURL: srv.URL, MaxRetries: 0,
+		APIKey: "test-key", BaseURL: srv.URL, MaxRetries: audacityruntime.NoRetries,
 	})
 	_, err := client.Converse(context.Background(), &audacityruntime.ConverseInput{
 		ModelId:  audacity.String("gpt-5.4-mini"),
@@ -106,12 +106,12 @@ func TestErrorShapeB_BudgetExceeded(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(429) // 429 with BUDGET_EXCEEDED → ServiceQuotaExceededException
-		fmt.Fprintln(w, `{"success":false,"error":{"code":"BUDGET_EXCEEDED","message":"Budget exhausted","request_id":"req-999"}}`)
+		fmt.Fprintln(w, `{"success":false,"error":{"code":"BUDGET_EXCEEDED","message":"Budget exhausted","request_id":"req-999","details":{"binding_cap":"team"}}}`)
 	}))
 	defer srv.Close()
 
 	client := audacityruntime.New(audacityruntime.Options{
-		APIKey: "test-key", BaseURL: srv.URL, MaxRetries: 0,
+		APIKey: "test-key", BaseURL: srv.URL, MaxRetries: audacityruntime.NoRetries,
 	})
 	_, err := client.Converse(context.Background(), &audacityruntime.ConverseInput{
 		ModelId:  audacity.String("gpt-5.4-mini"),
@@ -119,7 +119,15 @@ func TestErrorShapeB_BudgetExceeded(t *testing.T) {
 	})
 	var quota *types.ServiceQuotaExceededException
 	if !errors.As(err, &quota) {
-		t.Errorf("expected ServiceQuotaExceededException for BUDGET_EXCEEDED, got %T: %v", err, err)
+		t.Fatalf("expected ServiceQuotaExceededException for BUDGET_EXCEEDED, got %T: %v", err, err)
+	}
+	// Spec §4: shape-B error.details must be carried on the exception.
+	details, ok := quota.Details.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Details = %#v, want map with binding_cap", quota.Details)
+	}
+	if details["binding_cap"] != "team" {
+		t.Errorf("Details[binding_cap] = %v, want team", details["binding_cap"])
 	}
 }
 
@@ -163,8 +171,8 @@ func TestRetryAfterThenSuccess(t *testing.T) {
 	if resp == nil {
 		t.Fatal("expected non-nil response")
 	}
-	if attempts != 2 {
-		t.Errorf("expected 2 attempts, got %d", attempts)
+	if n := atomic.LoadInt32(&attempts); n != 2 {
+		t.Errorf("expected 2 attempts, got %d", n)
 	}
 }
 
@@ -193,8 +201,8 @@ func TestNoRetryOn401(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on 401")
 	}
-	if attempts != 1 {
-		t.Errorf("401 should not be retried; attempts = %d, want 1", attempts)
+	if n := atomic.LoadInt32(&attempts); n != 1 {
+		t.Errorf("401 should not be retried; attempts = %d, want 1", n)
 	}
 }
 
@@ -227,8 +235,8 @@ func TestNoBudgetExceededRetry(t *testing.T) {
 	if !errors.As(err, &quota) {
 		t.Errorf("expected ServiceQuotaExceededException, got %T", err)
 	}
-	if attempts != 1 {
-		t.Errorf("BUDGET_EXCEEDED should not be retried; attempts = %d, want 1", attempts)
+	if n := atomic.LoadInt32(&attempts); n != 1 {
+		t.Errorf("BUDGET_EXCEEDED should not be retried; attempts = %d, want 1", n)
 	}
 }
 
@@ -239,7 +247,9 @@ func TestNoBudgetExceededRetry(t *testing.T) {
 func TestErrorsAsChain(t *testing.T) {
 	// ModelStreamErrorException should unwrap to ModelErrorException
 	streamErr := &types.ModelStreamErrorException{
-		APIError: types.APIError{Message: "stream died", StatusCode: 0, ErrorCode: "STREAM_ERROR"},
+		ModelErrorException: types.ModelErrorException{
+			APIError: types.APIError{Message: "stream died", StatusCode: 0, ErrorCode: "STREAM_ERROR"},
+		},
 	}
 
 	var modelErr *types.ModelErrorException
@@ -281,7 +291,7 @@ func TestHTTPStatusFallbackMapping(t *testing.T) {
 			defer srv.Close()
 
 			client := audacityruntime.New(audacityruntime.Options{
-				APIKey: "test-key", BaseURL: srv.URL, MaxRetries: 0,
+				APIKey: "test-key", BaseURL: srv.URL, MaxRetries: audacityruntime.NoRetries,
 			})
 			_, err := client.Converse(context.Background(), &audacityruntime.ConverseInput{
 				ModelId:  audacity.String("gpt-5.4-mini"),

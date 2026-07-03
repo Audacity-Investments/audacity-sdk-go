@@ -17,6 +17,14 @@ const (
 	userAgent         = "audacity-sdk-go/" + sdkVersion
 )
 
+// NoTimeout disables the request timeout entirely.  Any negative Timeout
+// value is treated the same way; Timeout == 0 means "use the default".
+const NoTimeout time.Duration = -1
+
+// NoRetries disables retries (a single attempt).  Any negative MaxRetries
+// value is treated the same way; MaxRetries == 0 means "use the default".
+const NoRetries int = -1
+
 // Options configures a Client.
 //
 // Resolution order for each field:
@@ -32,16 +40,23 @@ type Options struct {
 	// Falls back to AUDACITY_BASE_URL, then https://portal.audacityinvestments.com.
 	BaseURL string
 
-	// HTTPClient replaces the default http.Client.
-	// When nil, a client with the configured Timeout is created.
+	// HTTPClient replaces the default http.Client.  The SDK never sets
+	// http.Client.Timeout itself (it would cut streams off mid-body); if you
+	// provide a client with a Timeout, that timeout will bound entire
+	// streaming responses.
 	HTTPClient *http.Client
 
 	// MaxRetries is the number of additional attempts after the first.
-	// Default: 2 (up to 3 total attempts).
+	// 0 means "use the default" (2, i.e. up to 3 total attempts).
+	// Use NoRetries (or any negative value) to disable retries.
 	MaxRetries int
 
-	// Timeout is the per-request timeout applied when HTTPClient is nil.
-	// Default: 120s.  Set to 0 for no timeout (useful for long streams).
+	// Timeout bounds each attempt: connection + request write + response
+	// headers, and — for Converse only — the full response body read.  The
+	// SSE body of a ConverseStream is never bounded by it (streams may run
+	// far longer); cancel the context to abort a stream.
+	// 0 means "use the default" (120s).  Use NoTimeout (or any negative
+	// value) to disable it.
 	Timeout time.Duration
 }
 
@@ -68,14 +83,21 @@ func New(opts Options) *Client {
 	}
 	if opts.MaxRetries == 0 {
 		opts.MaxRetries = defaultMaxRetries
+	} else if opts.MaxRetries < 0 {
+		opts.MaxRetries = 0 // NoRetries: single attempt
 	}
 	if opts.Timeout == 0 {
 		opts.Timeout = defaultTimeout
+	} else if opts.Timeout < 0 {
+		opts.Timeout = 0 // NoTimeout: internally, 0 = unbounded
 	}
 
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: opts.Timeout}
+		// Deliberately no http.Client.Timeout: it would bound the entire
+		// response body read and kill long-running SSE streams.  Per-attempt
+		// timeouts are applied via context in the request path instead.
+		httpClient = &http.Client{}
 	}
 
 	return &Client{

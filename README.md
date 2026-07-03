@@ -245,6 +245,40 @@ resp, err := client.Converse(ctx, &audacityruntime.ConverseInput{
 
 ---
 
+## Images (vision models)
+
+Bedrock-style image content blocks are supported in user messages. Pass raw
+bytes (base64-encoded for you) or a URL (Audacity extension):
+
+```go
+imageBytes, err := os.ReadFile("chart.png")
+if err != nil {
+    log.Fatal(err)
+}
+
+resp, err := client.Converse(ctx, &audacityruntime.ConverseInput{
+    ModelId: audacity.String("gpt-5.5"),
+    Messages: []types.Message{{
+        Role: types.ConversationRoleUser,
+        Content: []types.ContentBlock{
+            &types.ContentBlockMemberText{Value: "What does this chart show?"},
+            &types.ContentBlockMemberImage{Value: types.ImageBlock{
+                Format: types.ImageFormatPng,
+                Source: &types.ImageSourceMemberBytes{Value: imageBytes},
+            }},
+        },
+    }},
+})
+
+// Or reference a hosted image directly (not available in Bedrock):
+// Source: &types.ImageSourceMemberUrl{Value: "https://example.com/photo.jpg"}
+```
+
+`Format` is one of `ImageFormatPng`, `ImageFormatJpeg`, `ImageFormatGif`,
+`ImageFormatWebp`. Use a vision-capable model.
+
+---
+
 ## Options reference
 
 ```go
@@ -252,13 +286,21 @@ client := audacityruntime.New(audacityruntime.Options{
     APIKey:     "audacity_api_…",         // falls back to AUDACITY_API_KEY
     BaseURL:    "https://…",              // falls back to AUDACITY_BASE_URL, then default
     HTTPClient: &http.Client{…},          // custom transport / TLS config
-    MaxRetries: 3,                        // additional attempts (default 2 → 3 total)
-    Timeout:    60 * time.Second,         // per-request timeout (default 120s; 0 = none)
+    MaxRetries: 3,                        // additional attempts (0 = default 2 → 3 total;
+                                          // audacityruntime.NoRetries disables retries)
+    Timeout:    60 * time.Second,         // per-attempt timeout (0 = default 120s;
+                                          // audacityruntime.NoTimeout disables it)
 })
 ```
 
-For long-running streams set `Timeout: 0` (or provide a custom `HTTPClient` with no
-`Timeout`) to prevent the response body from being cancelled mid-stream.
+The timeout bounds each attempt's connection + headers, and — for `Converse` only —
+the full response body. **Streams are never cut off by it**: for `ConverseStream` the
+timeout applies only until response headers arrive, so long generations can run
+indefinitely. To abort a stream, cancel the request `context` or call `stream.Close()`
+— either unblocks the reader goroutine and releases the connection.
+
+If you provide a custom `HTTPClient`, leave its `Timeout` unset — an `http.Client`
+timeout bounds the entire response body and will kill long streams mid-generation.
 
 ---
 

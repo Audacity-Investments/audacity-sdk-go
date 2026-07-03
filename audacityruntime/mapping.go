@@ -4,6 +4,7 @@ package audacityruntime
 // Bedrock-shaped public API and the OpenAI wire format.
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 
@@ -60,9 +61,9 @@ type oaiChunk struct {
 }
 
 type oaiStreamChoice struct {
-	Index        int            `json:"index"`
-	Delta        oaiStreamDelta `json:"delta"`
-	FinishReason *string        `json:"finish_reason"`
+	Index        int             `json:"index"`
+	Delta        *oaiStreamDelta `json:"delta"` // nil when the chunk has no delta key (or "delta": null)
+	FinishReason *string         `json:"finish_reason"`
 }
 
 type oaiStreamDelta struct {
@@ -95,10 +96,15 @@ func buildRequestBody(input *ConverseInput, stream bool) ([]byte, error) {
 		modelId = *input.ModelId
 	}
 
+	messages, err := buildMessages(input)
+	if err != nil {
+		return nil, err
+	}
+
 	// Build the body as a map so additionalModelRequestFields can be shallow-merged last.
 	body := map[string]interface{}{
 		"model":    modelId,
-		"messages": buildMessages(input),
+		"messages": messages,
 	}
 
 	// §3 rule 4 — inferenceConfig
@@ -153,10 +159,14 @@ func buildRequestBody(input *ConverseInput, stream bool) ([]byte, error) {
 		body[k] = v
 	}
 
-	return json.Marshal(body)
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, &types.SdkError{Message: "failed to build request body", Err: err}
+	}
+	return b, nil
 }
 
-func buildMessages(input *ConverseInput) []interface{} {
+func buildMessages(input *ConverseInput) ([]interface{}, error) {
 	var out []interface{}
 
 	// §3 rule 2 — system blocks
@@ -175,7 +185,7 @@ func buildMessages(input *ConverseInput) []interface{} {
 	for _, msg := range input.Messages {
 		switch msg.Role {
 		case types.ConversationRoleUser:
-			// tool-result blocks first, then text block
+			// tool-result blocks first, then the user message
 			for _, block := range msg.Content {
 				tr, ok := block.(*types.ContentBlockMemberToolResult)
 				if !ok {
@@ -187,13 +197,40 @@ func buildMessages(input *ConverseInput) []interface{} {
 					"content":      joinToolResultContent(tr.Value.Content),
 				})
 			}
-			var textParts []string
+			// Ordered text/image content parts so the multimodal path
+			// preserves original block order (spec §3).
+			var userParts []map[string]interface{}
+			hasImage := false
 			for _, block := range msg.Content {
-				if tb, ok := block.(*types.ContentBlockMemberText); ok {
-					textParts = append(textParts, tb.Value)
+				switch b := block.(type) {
+				case *types.ContentBlockMemberText:
+					userParts = append(userParts, map[string]interface{}{
+						"type": "text",
+						"text": b.Value,
+					})
+				case *types.ContentBlockMemberImage:
+					hasImage = true
+					url, err := imageBlockURL(b.Value)
+					if err != nil {
+						return nil, err
+					}
+					userParts = append(userParts, map[string]interface{}{
+						"type":      "image_url",
+						"image_url": map[string]interface{}{"url": url},
+					})
 				}
 			}
-			if len(textParts) > 0 {
+			if hasImage {
+				out = append(out, map[string]interface{}{
+					"role":    "user",
+					"content": userParts,
+				})
+			} else if len(userParts) > 0 {
+				// Text-only turn keeps the plain-string form (spec §3).
+				textParts := make([]string, 0, len(userParts))
+				for _, p := range userParts {
+					textParts = append(textParts, p["text"].(string))
+				}
 				out = append(out, map[string]interface{}{
 					"role":    "user",
 					"content": strings.Join(textParts, "\n"),
@@ -234,7 +271,25 @@ func buildMessages(input *ConverseInput) []interface{} {
 			out = append(out, m)
 		}
 	}
-	return out
+	return out, nil
+}
+
+// imageBlockURL maps an image block to the URL of its OpenAI image_url
+// content part (spec §3): source.url is passed through verbatim; source.bytes
+// is base64-encoded into a data URL.  A missing/unknown source is a
+// client-side validation error rather than an empty URL on the wire.
+func imageBlockURL(img types.ImageBlock) (string, error) {
+	switch src := img.Source.(type) {
+	case *types.ImageSourceMemberUrl:
+		return src.Value, nil
+	case *types.ImageSourceMemberBytes:
+		b64 := base64.StdEncoding.EncodeToString(src.Value)
+		return "data:image/" + string(img.Format) + ";base64," + b64, nil
+	default:
+		return "", &types.ValidationException{APIError: types.APIError{
+			Message: "image block has no source: set ImageSourceMemberBytes or ImageSourceMemberUrl",
+		}}
+	}
 }
 
 func joinToolResultContent(content []types.ToolResultContentBlock) string {
@@ -327,20 +382,20 @@ func parseConverseResponse(body []byte, latencyMs int64) (*ConverseOutput, error
 	}, nil
 }
 
-func mapFinishReason(reason *string) string {
+func mapFinishReason(reason *string) types.StopReason {
 	if reason == nil {
-		return "end_turn"
+		return types.StopReasonEndTurn
 	}
 	switch *reason {
 	case "stop":
-		return "end_turn"
+		return types.StopReasonEndTurn
 	case "length":
-		return "max_tokens"
+		return types.StopReasonMaxTokens
 	case "tool_calls", "function_call":
-		return "tool_use"
+		return types.StopReasonToolUse
 	case "content_filter":
-		return "content_filtered"
+		return types.StopReasonContentFiltered
 	default:
-		return "end_turn"
+		return types.StopReasonEndTurn
 	}
 }

@@ -12,11 +12,20 @@ type APIError struct {
 	RetryAfterSeconds *int
 	RawBody           string
 
+	// Details carries the shape-B `error.details` object verbatim (spec §4),
+	// e.g. {"binding_cap": "team"} on budget-cap errors.  Nil when absent.
+	Details interface{}
+
 	// Retryable is stamped when the error is classified (spec §4 table:
 	// Throttling/ModelTimeout/ServiceUnavailable/InternalServer are retryable;
 	// ServiceQuotaExceeded — including 429 + BUDGET_EXCEEDED — and all others
 	// are not).  The retry loop reads this flag instead of re-deriving it.
 	Retryable bool
+
+	// Err preserves the underlying cause (e.g. the I/O error behind a
+	// mid-stream failure) so errors.Is(err, context.Canceled) and similar
+	// checks keep working through the typed-exception chain.
+	Err error
 }
 
 func (e *APIError) Error() string {
@@ -26,6 +35,9 @@ func (e *APIError) Error() string {
 	}
 	return fmt.Sprintf("%s (status=%d, code=%s)", e.Message, e.StatusCode, e.ErrorCode)
 }
+
+// Unwrap exposes the underlying cause, if any.
+func (e *APIError) Unwrap() error { return e.Err }
 
 // ValidationException is raised for malformed or logically invalid requests (HTTP 400).
 type ValidationException struct{ APIError }
@@ -63,12 +75,13 @@ type ModelErrorException struct{ APIError }
 func (e *ModelErrorException) Unwrap() error { return &e.APIError }
 
 // ModelStreamErrorException is raised when a streaming connection fails mid-stream.
-// It unwraps to ModelErrorException for errors.As compatibility.
-type ModelStreamErrorException struct{ APIError }
+// It embeds ModelErrorException (the spec's "subtype" relationship) so errors.As
+// can match *ModelErrorException without allocating on each Unwrap call.
+type ModelStreamErrorException struct{ ModelErrorException }
 
 // Unwrap allows errors.As to match *ModelErrorException in the chain.
 func (e *ModelStreamErrorException) Unwrap() error {
-	return &ModelErrorException{APIError: e.APIError}
+	return &e.ModelErrorException
 }
 
 // ServiceUnavailableException is raised when the upstream service is temporarily unavailable
@@ -91,9 +104,14 @@ func (*MissingAPIKeyError) Error() string {
 }
 
 // SdkError wraps network-level or response-decode failures.
+//
+// Retryable is true only for network/connect-level failures (spec §4); decode
+// failures, malformed 200 bodies, and client-side input validation are never
+// retryable.
 type SdkError struct {
-	Message string
-	Err     error
+	Message   string
+	Err       error
+	Retryable bool
 }
 
 func (e *SdkError) Error() string {

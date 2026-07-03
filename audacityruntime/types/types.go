@@ -10,6 +10,17 @@ const (
 	ConversationRoleAssistant ConversationRole = "assistant"
 )
 
+// StopReason explains why the model stopped generating.
+type StopReason string
+
+const (
+	StopReasonEndTurn         StopReason = "end_turn"
+	StopReasonMaxTokens       StopReason = "max_tokens"
+	StopReasonToolUse         StopReason = "tool_use"
+	StopReasonStopSequence    StopReason = "stop_sequence"
+	StopReasonContentFiltered StopReason = "content_filtered"
+)
+
 // Message is a conversation turn.
 type Message struct {
 	Role    ConversationRole
@@ -27,6 +38,49 @@ type ContentBlockMemberText struct {
 }
 
 func (*ContentBlockMemberText) isContentBlock() {}
+
+// ImageFormat identifies the media type of an image block.
+type ImageFormat string
+
+const (
+	ImageFormatPng  ImageFormat = "png"
+	ImageFormatJpeg ImageFormat = "jpeg"
+	ImageFormatGif  ImageFormat = "gif"
+	ImageFormatWebp ImageFormat = "webp"
+)
+
+// ImageSource is a sealed union for where an image's data comes from.
+type ImageSource interface {
+	isImageSource()
+}
+
+// ImageSourceMemberBytes carries raw image bytes (Bedrock parity).
+type ImageSourceMemberBytes struct {
+	Value []byte
+}
+
+func (*ImageSourceMemberBytes) isImageSource() {}
+
+// ImageSourceMemberUrl carries an https or data URL (Audacity extension).
+type ImageSourceMemberUrl struct {
+	Value string
+}
+
+func (*ImageSourceMemberUrl) isImageSource() {}
+
+// ImageBlock is the payload of an image content block.
+type ImageBlock struct {
+	Format ImageFormat
+	Source ImageSource
+}
+
+// ContentBlockMemberImage is an image content block. Only valid in user
+// messages; ignored in assistant messages (Bedrock parity).
+type ContentBlockMemberImage struct {
+	Value ImageBlock
+}
+
+func (*ContentBlockMemberImage) isContentBlock() {}
 
 // ToolUseBlock carries a model-initiated tool invocation.
 type ToolUseBlock struct {

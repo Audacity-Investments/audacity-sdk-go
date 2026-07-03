@@ -33,9 +33,10 @@ type ConverseOutput struct {
 	// Output contains the assistant's response (currently always *types.ConverseOutputMemberMessage).
 	Output types.ConverseOutput
 
-	// StopReason is one of: "end_turn", "max_tokens", "tool_use",
-	// "stop_sequence", "content_filtered".
-	StopReason string
+	// StopReason is one of: types.StopReasonEndTurn, types.StopReasonMaxTokens,
+	// types.StopReasonToolUse, types.StopReasonStopSequence,
+	// types.StopReasonContentFiltered.
+	StopReason types.StopReason
 
 	// Usage reports prompt/completion/total token counts.
 	Usage *types.TokenUsage
@@ -56,7 +57,7 @@ func (c *Client) Converse(ctx context.Context, input *ConverseInput) (*ConverseO
 
 	body, err := buildRequestBody(input, false)
 	if err != nil {
-		return nil, &types.SdkError{Message: "failed to build request body", Err: err}
+		return nil, err
 	}
 
 	respBody, latencyMs, err := c.doConverseWithRetry(ctx, body)
