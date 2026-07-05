@@ -6,7 +6,7 @@ the constructor, and keep the rest of your code.
 
 - Module: `github.com/Audacity-Investments/audacity-sdk-go`
 - Go 1.22+, **stdlib only** (`net/http`, `encoding/json`, `bufio`)
-- Version: `0.1.0`
+- Version: `0.2.0`
 
 ---
 
@@ -276,6 +276,41 @@ resp, err := client.Converse(ctx, &audacityruntime.ConverseInput{
 
 `Format` is one of `ImageFormatPng`, `ImageFormatJpeg`, `ImageFormatGif`,
 `ImageFormatWebp`. Use a vision-capable model.
+
+---
+
+## Prompt caching
+
+Place a Bedrock-style cache-point block after the stable prefix you want the
+provider to cache (system prompt, large documents). Everything up to the cache
+point is cached provider-side on Claude models; OpenAI/Gemini models cache
+automatically and ignore the marker. At most 4 cache points per request.
+
+```go
+resp, err := client.Converse(ctx, &audacityruntime.ConverseInput{
+    ModelId: audacity.String("claude-sonnet-4-5"),
+    System: []types.SystemContentBlock{
+        {Text: longSystemPrompt},
+        {CachePoint: &types.CachePointBlock{Type: types.CachePointTypeDefault}},
+    },
+    Messages: []types.Message{{
+        Role: types.ConversationRoleUser,
+        Content: []types.ContentBlock{
+            &types.ContentBlockMemberText{Value: bigReferenceDocument},
+            &types.ContentBlockMemberCachePoint{
+                Value: types.CachePointBlock{Type: types.CachePointTypeDefault},
+            },
+            &types.ContentBlockMemberText{Value: "Summarise the key risks."},
+        },
+    }},
+})
+
+// Cache activity is reported in usage (Bedrock names):
+fmt.Println(resp.Usage.CacheReadInputTokens)  // tokens served from cache
+fmt.Println(resp.Usage.CacheWriteInputTokens) // tokens written to cache
+```
+
+A cache point with nothing before it in the same message is silently ignored.
 
 ---
 

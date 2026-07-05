@@ -418,11 +418,7 @@ func (sm *streamSM) finish(latencyMs int64) types.ConverseStreamOutput {
 	}
 	return &types.ConverseStreamOutputMemberMetadata{
 		Value: types.ConverseStreamMetadataEvent{
-			Usage: &types.TokenUsage{
-				InputTokens:  sm.pendingUsage.PromptTokens,
-				OutputTokens: sm.pendingUsage.CompletionTokens,
-				TotalTokens:  sm.pendingUsage.TotalTokens,
-			},
+			Usage:   mapTokenUsage(sm.pendingUsage),
 			Metrics: &types.ConverseMetrics{LatencyMs: latencyMs},
 		},
 	}

@@ -47,9 +47,39 @@ type oaiMsg struct {
 }
 
 type oaiUsage struct {
-	PromptTokens     int32 `json:"prompt_tokens"`
-	CompletionTokens int32 `json:"completion_tokens"`
-	TotalTokens      int32 `json:"total_tokens"`
+	PromptTokens        int32                   `json:"prompt_tokens"`
+	CompletionTokens    int32                   `json:"completion_tokens"`
+	TotalTokens         int32                   `json:"total_tokens"`
+	PromptTokensDetails *oaiPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	// Anthropic-style top-level cache counters (LiteLLM surfaces cache-write
+	// tokens top-level; cache_read_input_tokens is a fallback spelling).
+	CacheReadInputTokens     *int32 `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens *int32 `json:"cache_creation_input_tokens,omitempty"`
+}
+
+type oaiPromptTokensDetails struct {
+	CachedTokens *int32 `json:"cached_tokens,omitempty"`
+}
+
+// mapTokenUsage maps an OpenAI usage object to the Bedrock TokenUsage shape
+// (spec §3), including the prompt-cache counters.
+func mapTokenUsage(u *oaiUsage) *types.TokenUsage {
+	usage := &types.TokenUsage{}
+	if u == nil {
+		return usage
+	}
+	usage.InputTokens = u.PromptTokens
+	usage.OutputTokens = u.CompletionTokens
+	usage.TotalTokens = u.TotalTokens
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens != nil {
+		usage.CacheReadInputTokens = *u.PromptTokensDetails.CachedTokens
+	} else if u.CacheReadInputTokens != nil {
+		usage.CacheReadInputTokens = *u.CacheReadInputTokens
+	}
+	if u.CacheCreationInputTokens != nil {
+		usage.CacheWriteInputTokens = *u.CacheCreationInputTokens
+	}
+	return usage
 }
 
 // Stream-specific chunk types
@@ -171,14 +201,42 @@ func buildMessages(input *ConverseInput) ([]interface{}, error) {
 
 	// §3 rule 2 — system blocks
 	if len(input.System) > 0 {
-		parts := make([]string, 0, len(input.System))
+		hasCachePoint := false
 		for _, s := range input.System {
-			parts = append(parts, s.Text)
+			if s.CachePoint != nil {
+				hasCachePoint = true
+				break
+			}
 		}
-		out = append(out, map[string]interface{}{
-			"role":    "system",
-			"content": strings.Join(parts, "\n\n"),
-		})
+		if hasCachePoint {
+			// Cache-point mode: content becomes a parts array (spec §3).
+			var sysParts []map[string]interface{}
+			for _, s := range input.System {
+				if s.CachePoint != nil {
+					applyCachePoint(sysParts)
+				} else {
+					sysParts = append(sysParts, map[string]interface{}{
+						"type": "text",
+						"text": s.Text,
+					})
+				}
+			}
+			if len(sysParts) > 0 {
+				out = append(out, map[string]interface{}{
+					"role":    "system",
+					"content": sysParts,
+				})
+			}
+		} else {
+			parts := make([]string, 0, len(input.System))
+			for _, s := range input.System {
+				parts = append(parts, s.Text)
+			}
+			out = append(out, map[string]interface{}{
+				"role":    "system",
+				"content": strings.Join(parts, "\n\n"),
+			})
+		}
 	}
 
 	// §3 rule 3 — conversation messages
@@ -201,6 +259,7 @@ func buildMessages(input *ConverseInput) ([]interface{}, error) {
 			// preserves original block order (spec §3).
 			var userParts []map[string]interface{}
 			hasImage := false
+			hasCachePoint := false
 			for _, block := range msg.Content {
 				switch b := block.(type) {
 				case *types.ContentBlockMemberText:
@@ -218,14 +277,17 @@ func buildMessages(input *ConverseInput) ([]interface{}, error) {
 						"type":      "image_url",
 						"image_url": map[string]interface{}{"url": url},
 					})
+				case *types.ContentBlockMemberCachePoint:
+					hasCachePoint = true
+					applyCachePoint(userParts)
 				}
 			}
-			if hasImage {
+			if (hasImage || hasCachePoint) && len(userParts) > 0 {
 				out = append(out, map[string]interface{}{
 					"role":    "user",
 					"content": userParts,
 				})
-			} else if len(userParts) > 0 {
+			} else if len(userParts) > 0 && !hasCachePoint {
 				// Text-only turn keeps the plain-string form (spec §3).
 				textParts := make([]string, 0, len(userParts))
 				for _, p := range userParts {
@@ -239,11 +301,17 @@ func buildMessages(input *ConverseInput) ([]interface{}, error) {
 
 		case types.ConversationRoleAssistant:
 			var textParts []string
+			var assistantParts []map[string]interface{}
 			var toolCalls []map[string]interface{}
+			hasCachePoint := false
 			for _, block := range msg.Content {
 				switch b := block.(type) {
 				case *types.ContentBlockMemberText:
 					textParts = append(textParts, b.Value)
+					assistantParts = append(assistantParts, map[string]interface{}{
+						"type": "text",
+						"text": b.Value,
+					})
 				case *types.ContentBlockMemberToolUse:
 					args, _ := json.Marshal(b.Value.Input)
 					toolCalls = append(toolCalls, map[string]interface{}{
@@ -254,11 +322,17 @@ func buildMessages(input *ConverseInput) ([]interface{}, error) {
 							"arguments": string(args),
 						},
 					})
+				case *types.ContentBlockMemberCachePoint:
+					hasCachePoint = true
+					applyCachePoint(assistantParts)
 				}
 			}
-			// content is the joined text, or null if no text blocks
+			// content is the joined text (a parts array in cache-point mode),
+			// or null if no text blocks
 			var content interface{}
-			if len(textParts) > 0 {
+			if hasCachePoint && len(assistantParts) > 0 {
+				content = assistantParts
+			} else if len(textParts) > 0 {
 				content = strings.Join(textParts, "\n")
 			}
 			m := map[string]interface{}{
@@ -272,6 +346,15 @@ func buildMessages(input *ConverseInput) ([]interface{}, error) {
 		}
 	}
 	return out, nil
+}
+
+// applyCachePoint attaches the ephemeral cache_control marker to the last
+// emitted content part (spec §3 cache points). A cache point with no preceding
+// part is silently ignored.
+func applyCachePoint(parts []map[string]interface{}) {
+	if len(parts) > 0 {
+		parts[len(parts)-1]["cache_control"] = map[string]interface{}{"type": "ephemeral"}
+	}
 }
 
 // imageBlockURL maps an image block to the URL of its OpenAI image_url
@@ -367,12 +450,7 @@ func parseConverseResponse(body []byte, latencyMs int64) (*ConverseOutput, error
 		Content: contentBlocks,
 	}
 
-	usage := &types.TokenUsage{}
-	if resp.Usage != nil {
-		usage.InputTokens = resp.Usage.PromptTokens
-		usage.OutputTokens = resp.Usage.CompletionTokens
-		usage.TotalTokens = resp.Usage.TotalTokens
-	}
+	usage := mapTokenUsage(resp.Usage)
 
 	return &ConverseOutput{
 		Output:     &types.ConverseOutputMemberMessage{Value: msg},

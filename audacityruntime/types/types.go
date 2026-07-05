@@ -129,9 +129,38 @@ type ContentBlockMemberToolResult struct {
 
 func (*ContentBlockMemberToolResult) isContentBlock() {}
 
-// SystemContentBlock is a system-prompt content entry.
+// CachePointType identifies the kind of prompt-cache breakpoint.
+type CachePointType string
+
+const (
+	CachePointTypeDefault CachePointType = "default"
+)
+
+// CachePointBlock marks the end of a cacheable prompt prefix (Bedrock parity).
+// The zero value is a default cache point.
+type CachePointBlock struct {
+	Type CachePointType
+}
+
+// ContentBlockMemberCachePoint is a prompt-cache breakpoint. The content part
+// preceding it gets an ephemeral cache_control marker on the wire; the block
+// itself is never emitted. A cache point with no preceding content part in the
+// same message is silently ignored.
+type ContentBlockMemberCachePoint struct {
+	Value CachePointBlock
+}
+
+func (*ContentBlockMemberCachePoint) isContentBlock() {}
+
+// SystemContentBlock is a system-prompt content entry. Exactly one of Text or
+// CachePoint should be set: a Text entry contributes system-prompt text, while
+// a CachePoint entry marks the end of the cacheable system prefix.
 type SystemContentBlock struct {
 	Text string
+
+	// CachePoint, when non-nil, makes this entry a prompt-cache breakpoint
+	// (Text is ignored).
+	CachePoint *CachePointBlock
 }
 
 // InferenceConfiguration holds optional inference parameters.
@@ -209,6 +238,14 @@ type TokenUsage struct {
 	InputTokens  int32
 	OutputTokens int32
 	TotalTokens  int32
+
+	// CacheReadInputTokens is the number of prompt tokens served from the
+	// provider's prompt cache (Bedrock name).
+	CacheReadInputTokens int32
+
+	// CacheWriteInputTokens is the number of prompt tokens written to the
+	// provider's prompt cache (Bedrock name).
+	CacheWriteInputTokens int32
 }
 
 // ConverseMetrics reports latency for a request.
