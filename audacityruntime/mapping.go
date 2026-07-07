@@ -153,6 +153,12 @@ func buildRequestBody(input *ConverseInput, stream bool) ([]byte, error) {
 		}
 	}
 
+	// §3 rule 4 — mediaResolution → top-level media_resolution (omit when
+	// absent; no client-side model gating)
+	if input.MediaResolution != "" {
+		body["media_resolution"] = string(input.MediaResolution)
+	}
+
 	// §3 rule 5 — toolConfig
 	if tc := input.ToolConfig; tc != nil && len(tc.Tools) > 0 {
 		tools := make([]map[string]interface{}, 0, len(tc.Tools))
@@ -255,10 +261,10 @@ func buildMessages(input *ConverseInput) ([]interface{}, error) {
 					"content":      joinToolResultContent(tr.Value.Content),
 				})
 			}
-			// Ordered text/image content parts so the multimodal path
+			// Ordered text/image/video content parts so the multimodal path
 			// preserves original block order (spec §3).
 			var userParts []map[string]interface{}
-			hasImage := false
+			hasMedia := false
 			hasCachePoint := false
 			for _, block := range msg.Content {
 				switch b := block.(type) {
@@ -268,7 +274,7 @@ func buildMessages(input *ConverseInput) ([]interface{}, error) {
 						"text": b.Value,
 					})
 				case *types.ContentBlockMemberImage:
-					hasImage = true
+					hasMedia = true
 					url, err := imageBlockURL(b.Value)
 					if err != nil {
 						return nil, err
@@ -277,12 +283,19 @@ func buildMessages(input *ConverseInput) ([]interface{}, error) {
 						"type":      "image_url",
 						"image_url": map[string]interface{}{"url": url},
 					})
+				case *types.ContentBlockMemberVideo:
+					hasMedia = true
+					part, err := videoFilePart(b.Value)
+					if err != nil {
+						return nil, err
+					}
+					userParts = append(userParts, part)
 				case *types.ContentBlockMemberCachePoint:
 					hasCachePoint = true
 					applyCachePoint(userParts)
 				}
 			}
-			if (hasImage || hasCachePoint) && len(userParts) > 0 {
+			if (hasMedia || hasCachePoint) && len(userParts) > 0 {
 				out = append(out, map[string]interface{}{
 					"role":    "user",
 					"content": userParts,
@@ -371,6 +384,58 @@ func imageBlockURL(img types.ImageBlock) (string, error) {
 	default:
 		return "", &types.ValidationException{APIError: types.APIError{
 			Message: "image block has no source: set ImageSourceMemberBytes or ImageSourceMemberUrl",
+		}}
+	}
+}
+
+// videoFormatMIME is the §3 VideoFormat → MIME type table (data-URL media
+// type and file.format).
+var videoFormatMIME = map[types.VideoFormat]string{
+	types.VideoFormatMp4:     "video/mp4",
+	types.VideoFormatMov:     "video/mov",
+	types.VideoFormatMkv:     "video/x-matroska",
+	types.VideoFormatWebm:    "video/webm",
+	types.VideoFormatFlv:     "video/x-flv",
+	types.VideoFormatMpeg:    "video/mpeg",
+	types.VideoFormatMpg:     "video/mpg",
+	types.VideoFormatWmv:     "video/wmv",
+	types.VideoFormatThreeGp: "video/3gpp",
+}
+
+// videoFilePart maps a video block to an OpenAI-protocol file content part
+// (spec §3): source.bytes are base64-encoded into a data URL with the MIME
+// type from the format table; source.uri is passed through verbatim in
+// file.file_id (the gateway resolves it server-side). A missing/unknown
+// source or format is a client-side validation error rather than a
+// malformed part on the wire.
+func videoFilePart(video types.VideoBlock) (map[string]interface{}, error) {
+	mime, ok := videoFormatMIME[video.Format]
+	if !ok {
+		return nil, &types.ValidationException{APIError: types.APIError{
+			Message: "video block has unknown format " + string(video.Format),
+		}}
+	}
+	switch src := video.Source.(type) {
+	case *types.VideoSourceMemberBytes:
+		b64 := base64.StdEncoding.EncodeToString(src.Value)
+		return map[string]interface{}{
+			"type": "file",
+			"file": map[string]interface{}{
+				"file_data": "data:" + mime + ";base64," + b64,
+				"format":    mime,
+			},
+		}, nil
+	case *types.VideoSourceMemberURI:
+		return map[string]interface{}{
+			"type": "file",
+			"file": map[string]interface{}{
+				"file_id": src.Value,
+				"format":  mime,
+			},
+		}, nil
+	default:
+		return nil, &types.ValidationException{APIError: types.APIError{
+			Message: "video block has no source: set VideoSourceMemberBytes or VideoSourceMemberURI",
 		}}
 	}
 }

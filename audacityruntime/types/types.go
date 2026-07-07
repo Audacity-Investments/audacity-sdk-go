@@ -82,6 +82,56 @@ type ContentBlockMemberImage struct {
 
 func (*ContentBlockMemberImage) isContentBlock() {}
 
+// VideoFormat identifies the container format of a video block.
+type VideoFormat string
+
+const (
+	VideoFormatMp4     VideoFormat = "mp4"
+	VideoFormatMov     VideoFormat = "mov"
+	VideoFormatMkv     VideoFormat = "mkv"
+	VideoFormatWebm    VideoFormat = "webm"
+	VideoFormatFlv     VideoFormat = "flv"
+	VideoFormatMpeg    VideoFormat = "mpeg"
+	VideoFormatMpg     VideoFormat = "mpg"
+	VideoFormatWmv     VideoFormat = "wmv"
+	VideoFormatThreeGp VideoFormat = "three_gp"
+)
+
+// VideoSource is a sealed union for where a video's data comes from.
+type VideoSource interface {
+	isVideoSource()
+}
+
+// VideoSourceMemberBytes carries raw video bytes (Bedrock parity).
+type VideoSourceMemberBytes struct {
+	Value []byte
+}
+
+func (*VideoSourceMemberBytes) isVideoSource() {}
+
+// VideoSourceMemberURI references a previously uploaded file by its
+// audacity://files/… URI (returned by Client.UploadFile) — the analogue of
+// Bedrock's s3Location source for videos too large to send inline.
+type VideoSourceMemberURI struct {
+	Value string
+}
+
+func (*VideoSourceMemberURI) isVideoSource() {}
+
+// VideoBlock is the payload of a video content block.
+type VideoBlock struct {
+	Format VideoFormat
+	Source VideoSource
+}
+
+// ContentBlockMemberVideo is a video content block. Only valid in user
+// messages; ignored in assistant messages (Bedrock parity).
+type ContentBlockMemberVideo struct {
+	Value VideoBlock
+}
+
+func (*ContentBlockMemberVideo) isContentBlock() {}
+
 // ToolUseBlock carries a model-initiated tool invocation.
 type ToolUseBlock struct {
 	ToolUseId string
@@ -170,6 +220,20 @@ type InferenceConfiguration struct {
 	TopP          *float32
 	StopSequences []string
 }
+
+// MediaResolution controls how the provider tokenizes video/image input.
+// It is sent as the top-level media_resolution request field; the gateway
+// validates the enum and rewrites it for the provider (Gemini models —
+// MediaResolutionLow cuts video token cost roughly 4x; other models ignore
+// it). The zero value omits the field.
+type MediaResolution string
+
+const (
+	MediaResolutionLow       MediaResolution = "low"
+	MediaResolutionMedium    MediaResolution = "medium"
+	MediaResolutionHigh      MediaResolution = "high"
+	MediaResolutionUltraHigh MediaResolution = "ultra_high"
+)
 
 // ToolInputSchema wraps a JSON Schema object for a tool's input.
 type ToolInputSchema struct {

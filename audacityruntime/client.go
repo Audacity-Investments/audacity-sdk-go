@@ -13,7 +13,7 @@ const (
 	defaultBaseURL    = "https://portal.audacityinvestments.com"
 	defaultTimeout    = 120 * time.Second
 	defaultMaxRetries = 2
-	sdkVersion        = "0.2.0"
+	sdkVersion        = "0.4.0"
 	userAgent         = "audacity-sdk-go/" + sdkVersion
 )
 

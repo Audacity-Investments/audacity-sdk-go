@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 
 	audacity "github.com/Audacity-Investments/audacity-sdk-go"
 	"github.com/Audacity-Investments/audacity-sdk-go/audacityruntime"
@@ -88,6 +89,31 @@ func main() {
 	_ = stream.Close()
 	fmt.Printf("event kinds in order: %v\n", kinds)
 	fmt.Printf("streamed text: %q\n", streamed)
+
+	// Optional (costs money): set AUDACITY_SMOKE_IMAGE_MODEL (e.g. gpt-image-1)
+	// to also smoke the image-generation endpoint. Skipped by default.
+	if imageModel := os.Getenv("AUDACITY_SMOKE_IMAGE_MODEL"); imageModel != "" {
+		fmt.Println("--- image generation ---")
+		img, err := client.GenerateImage(ctx, &audacityruntime.GenerateImageInput{
+			Model:  audacity.String(imageModel),
+			Prompt: audacity.String("A single red square on a white background"),
+			Size:   audacity.String("1024x1024"),
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		first := img.Data[0]
+		switch {
+		case first.Url != "":
+			fmt.Printf("url: %s\n", first.Url)
+		case first.B64Json != "":
+			fmt.Printf("b64_json bytes: %d\n", len(first.B64Json))
+		}
+		if img.Usage != nil {
+			fmt.Printf("usage: %d/%d/%d\n",
+				img.Usage.InputTokens, img.Usage.OutputTokens, img.Usage.TotalTokens)
+		}
+	}
 
 	fmt.Println("--- error: bad api key ---")
 	badClient := audacityruntime.New(audacityruntime.Options{APIKey: "audacity_api_bogus"})

@@ -6,7 +6,7 @@ the constructor, and keep the rest of your code.
 
 - Module: `github.com/Audacity-Investments/audacity-sdk-go`
 - Go 1.22+, **stdlib only** (`net/http`, `encoding/json`, `bufio`)
-- Version: `0.2.0`
+- Version: `0.3.0`
 
 ---
 
@@ -276,6 +276,159 @@ resp, err := client.Converse(ctx, &audacityruntime.ConverseInput{
 
 `Format` is one of `ImageFormatPng`, `ImageFormatJpeg`, `ImageFormatGif`,
 `ImageFormatWebp`. Use a vision-capable model.
+
+---
+
+## Video input
+
+Bedrock-style video content blocks are supported in user messages. Pass raw
+bytes; they are base64-encoded for you:
+
+```go
+videoBytes, err := os.ReadFile("demo.mp4")
+if err != nil {
+    log.Fatal(err)
+}
+
+resp, err := client.Converse(ctx, &audacityruntime.ConverseInput{
+    ModelId: audacity.String("gemini-2.5-flash"),
+    Messages: []types.Message{{
+        Role: types.ConversationRoleUser,
+        Content: []types.ContentBlock{
+            &types.ContentBlockMemberText{Value: "What happens in this video?"},
+            &types.ContentBlockMemberVideo{Value: types.VideoBlock{
+                Format: types.VideoFormatMp4,
+                Source: &types.VideoSourceMemberBytes{Value: videoBytes},
+            }},
+        },
+    }},
+})
+```
+
+`Format` is one of `VideoFormatMp4`, `VideoFormatMov`, `VideoFormatMkv`,
+`VideoFormatWebm`, `VideoFormatFlv`, `VideoFormatMpeg`, `VideoFormatMpg`,
+`VideoFormatWmv`, `VideoFormatThreeGp`.
+
+Video is **Gemini-only** at the gateway: `gemini-2.5-flash`, `gemini-2.5-pro`,
+and `gemini-3-flash-preview` accept video input — every other model rejects it
+with an HTTP 400. Inline video rides the request body, so keep raw video
+≤ ~20 MB (base64 inflates it by ~33% against the gateway's body cap).
+
+### Media resolution (cheaper video tokens)
+
+Set `MediaResolution` on the request to control how video/image input is
+tokenized — `types.MediaResolutionLow` cuts video token cost roughly **4x**
+(Gemini models; other models ignore the field). Accepted values:
+`MediaResolutionLow`, `MediaResolutionMedium`, `MediaResolutionHigh`,
+`MediaResolutionUltraHigh`. When unset, the field is omitted and the model's
+default applies.
+
+```go
+resp, err := client.Converse(ctx, &audacityruntime.ConverseInput{
+    ModelId:         audacity.String("gemini-2.5-flash"),
+    MediaResolution: types.MediaResolutionLow, // ~4x cheaper video tokens
+    Messages: []types.Message{{
+        Role: types.ConversationRoleUser,
+        Content: []types.ContentBlock{
+            &types.ContentBlockMemberText{Value: "What happens in this video?"},
+            &types.ContentBlockMemberVideo{Value: types.VideoBlock{
+                Format: types.VideoFormatMp4,
+                Source: &types.VideoSourceMemberBytes{Value: videoBytes},
+            }},
+        },
+    }},
+})
+```
+
+The same field exists on `ConverseStreamInput`.
+
+### Large videos: upload first, then reference by URI
+
+For videos over ~20 MB (up to **1 GB**), upload once with `UploadFile` and
+reference the returned `audacity://files/…` URI — the analogue of Bedrock
+Converse's `s3Location` video source:
+
+```go
+videoBytes, err := os.ReadFile("large-demo.mp4")
+if err != nil {
+    log.Fatal(err)
+}
+
+upload, err := client.UploadFile(ctx, &audacityruntime.UploadFileInput{
+    Data:        videoBytes,
+    ContentType: "video/mp4",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+resp, err := client.Converse(ctx, &audacityruntime.ConverseInput{
+    ModelId: audacity.String("gemini-2.5-flash"),
+    Messages: []types.Message{{
+        Role: types.ConversationRoleUser,
+        Content: []types.ContentBlock{
+            &types.ContentBlockMemberText{Value: "Summarise this video."},
+            &types.ContentBlockMemberVideo{Value: types.VideoBlock{
+                Format: types.VideoFormatMp4,
+                Source: &types.VideoSourceMemberURI{Value: upload.Uri},
+            }},
+        },
+    }},
+})
+```
+
+`UploadFile` performs the two-step §6 flow for you: a `POST /v1/files` for a
+presigned upload ticket (same auth, error mapping, and retry policy as
+`Converse`), then a **resumable upload** of the bytes (GCS resumable-session
+protocol): the file is sent in 8 MiB chunks, and on a network failure or
+transient server error (5xx/429) the SDK queries the session for the last
+confirmed byte and **automatically resumes from there** — up to 5 recovery
+attempts, with the budget resetting every time a chunk is confirmed. Other
+4xx errors fail immediately. Notes:
+
+- `ContentType` must be one of the video MIME types (`video/mp4`,
+  `video/mov`, `video/webm`, …); `Data` is capped at **1 GB**.
+- Uploaded files are transient inference inputs: they auto-delete after
+  **~24 hours**, so upload shortly before use and re-upload for later
+  sessions.
+- The presigned upload URL itself expires after **~15 minutes**
+  (`UploadFileOutput.ExpiresAt`); `UploadFile` uses it immediately, so this
+  only matters if you inspect the ticket yourself.
+- Files are namespaced per API key's client — a URI from one client is a
+  400 `file not found` for another.
+
+---
+
+## Image generation
+
+Generate images from a text prompt with `GenerateImage`:
+
+```go
+out, err := client.GenerateImage(ctx, &audacityruntime.GenerateImageInput{
+    Model:          audacity.String("gpt-image-1"),
+    Prompt:         audacity.String("A watercolor painting of a fox in a snowy forest"),
+    Size:           audacity.String("1024x1024"),
+    ResponseFormat: audacity.String("b64_json"), // or "url" (default) for a signed link
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+img, err := base64.StdEncoding.DecodeString(out.Data[0].B64Json)
+if err != nil {
+    log.Fatal(err)
+}
+os.WriteFile("fox.png", img, 0o644)
+// With ResponseFormat "url": out.Data[0].Url (signed link, expires ~24 h)
+```
+
+Optional fields: `N` (1–10 images), `Size` (`"WxH"`, model-dependent),
+`Quality` (e.g. `"standard"`, `"hd"`), and `User`. The output carries
+`Created`, `Data` (each entry has `Url` or `B64Json`, plus `RevisedPrompt`
+when the provider rewrites your prompt) and optional `Usage` token counts.
+Errors map to the same typed errors as `Converse` (401 →
+`*types.AccessDeniedException`, 429 → `*types.ThrottlingException`, spend cap
+→ `*types.ServiceQuotaExceededException`), usable with `errors.As`.
 
 ---
 

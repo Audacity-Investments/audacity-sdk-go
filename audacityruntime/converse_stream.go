@@ -34,6 +34,11 @@ type ConverseStreamInput struct {
 	// InferenceConfig overrides inference parameters.
 	InferenceConfig *types.InferenceConfiguration
 
+	// MediaResolution controls how video/image input is tokenized (Gemini
+	// models; types.MediaResolutionLow cuts video token cost ~4x).
+	// Serialized as the top-level media_resolution field; omitted when empty.
+	MediaResolution types.MediaResolution
+
 	// ToolConfig provides tool definitions and the tool-choice policy.
 	ToolConfig *types.ToolConfiguration
 

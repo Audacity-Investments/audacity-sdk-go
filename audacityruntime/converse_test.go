@@ -495,3 +495,65 @@ func TestAdditionalModelRequestFields(t *testing.T) {
 		AdditionalModelRequestFields: map[string]interface{}{"custom_field": "custom_value"},
 	})
 }
+
+// ─────────────────────────────────────────────────────────────
+// Checklist item 15 — mediaResolution request field
+// ─────────────────────────────────────────────────────────────
+
+func TestMediaResolution(t *testing.T) {
+	captureBody := func(t *testing.T, input *audacityruntime.ConverseInput) map[string]interface{} {
+		t.Helper()
+		var got map[string]interface{}
+		handler := func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Errorf("parse request body: %v", err)
+			}
+			jsonResponse(t, w, 200, map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"index": 0, "finish_reason": "stop",
+					"message": map[string]interface{}{"role": "assistant", "content": "ok"},
+				}},
+				"usage": map[string]interface{}{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+			})
+		}
+		client, _ := newTestClient(t, handler)
+		if _, err := client.Converse(context.Background(), input); err != nil {
+			t.Fatalf("Converse error: %v", err)
+		}
+		return got
+	}
+
+	messages := []types.Message{{
+		Role:    types.ConversationRoleUser,
+		Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: "Hi"}},
+	}}
+
+	t.Run("present", func(t *testing.T) {
+		for _, res := range []types.MediaResolution{
+			types.MediaResolutionLow,
+			types.MediaResolutionMedium,
+			types.MediaResolutionHigh,
+			types.MediaResolutionUltraHigh,
+		} {
+			body := captureBody(t, &audacityruntime.ConverseInput{
+				ModelId:         audacity.String("gemini-2.5-flash"),
+				Messages:        messages,
+				MediaResolution: res,
+			})
+			if body["media_resolution"] != string(res) {
+				t.Errorf("media_resolution = %v, want %q", body["media_resolution"], res)
+			}
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		body := captureBody(t, &audacityruntime.ConverseInput{
+			ModelId:  audacity.String("gemini-2.5-flash"),
+			Messages: messages,
+		})
+		if v, ok := body["media_resolution"]; ok {
+			t.Errorf("media_resolution present = %v, want key absent", v)
+		}
+	})
+}
