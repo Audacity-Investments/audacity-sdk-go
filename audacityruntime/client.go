@@ -13,7 +13,7 @@ const (
 	defaultBaseURL    = "https://portal.audacityinvestments.com"
 	defaultTimeout    = 120 * time.Second
 	defaultMaxRetries = 2
-	sdkVersion        = "0.4.0"
+	sdkVersion        = "0.5.0"
 	userAgent         = "audacity-sdk-go/" + sdkVersion
 )
 
@@ -64,6 +64,17 @@ type Options struct {
 type Client struct {
 	options    Options
 	httpClient *http.Client
+
+	// Chat is the OpenAI-format pass-through surface (spec §9):
+	// Chat.Completions.Create / Chat.Completions.CreateStream send the
+	// request body verbatim to POST /v1/chat/completions.
+	Chat *ChatService
+
+	// Messages is the Anthropic-format pass-through surface (spec §9):
+	// Messages.Create / Messages.CreateStream / Messages.CountTokens send
+	// the request body verbatim to POST /v1/messages and
+	// POST /v1/messages/count_tokens.
+	Messages *MessagesService
 }
 
 // New creates a Client from the provided Options, applying environment-variable
@@ -100,8 +111,11 @@ func New(opts Options) *Client {
 		httpClient = &http.Client{}
 	}
 
-	return &Client{
+	c := &Client{
 		options:    opts,
 		httpClient: httpClient,
 	}
+	c.Chat = &ChatService{Completions: &ChatCompletionsService{client: c}}
+	c.Messages = &MessagesService{client: c}
+	return c
 }

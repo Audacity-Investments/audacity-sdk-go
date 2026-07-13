@@ -6,7 +6,7 @@ the constructor, and keep the rest of your code.
 
 - Module: `github.com/Audacity-Investments/audacity-sdk-go`
 - Go 1.22+, **stdlib only** (`net/http`, `encoding/json`, `bufio`)
-- Version: `0.3.0`
+- Version: `0.5.0`
 
 ---
 
@@ -31,7 +31,7 @@ immediately, before any network call.
 
 | Variable | Purpose |
 |----------|---------|
-| `AUDACITY_API_KEY` | API key (`audacity_api_…`) |
+| `AUDACITY_API_KEY` | API key (`aireserve_api_…`) |
 | `AUDACITY_BASE_URL` | Override the default endpoint |
 
 ---
@@ -126,6 +126,137 @@ if err := stream.Err(); err != nil {
     log.Fatal(err)
 }
 ```
+
+---
+
+## OpenAI & Anthropic native formats (pass-through)
+
+Besides the Bedrock-shaped `Converse` surface, the client exposes the gateway's
+**OpenAI Chat Completions** and **Anthropic Messages** wire formats directly —
+same auth, retries, and typed errors, but **no shape translation**: request
+bodies are sent verbatim and responses returned untranslated. Both formats work
+with every gateway model (the gateway bridges the format).
+
+| Surface | Endpoint |
+|---------|----------|
+| `client.Chat.Completions.Create` / `CreateStream` | `POST /v1/chat/completions` |
+| `client.Messages.Create` / `CreateStream` | `POST /v1/messages` |
+| `client.Messages.CountTokens` | `POST /v1/messages/count_tokens` |
+
+Params structs model the common fields; anything else goes in `Extra`, which is
+shallow-merged into the request body last — any field the gateway supports
+works, with no SDK release needed.
+
+### OpenAI format
+
+```go
+resp, err := client.Chat.Completions.Create(ctx, &audacityruntime.ChatCompletionCreateParams{
+    Model:       "gpt-5.4-mini",
+    Messages:    []map[string]interface{}{{"role": "user", "content": "Hello!"}},
+    MaxTokens:   audacity.Int32(500),
+    Temperature: audacity.Float64(0.2),
+    Extra:       map[string]interface{}{"seed": 7}, // any other OpenAI field
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(resp.Choices[0].Message["content"]) // raw OpenAI shape
+fmt.Println(resp.Raw["usage"])                  // full untranslated body
+```
+
+Streaming yields raw chat-completion chunks; the stream ends at the gateway's
+`data: [DONE]` sentinel (EOF without it surfaces as `*types.ModelStreamErrorException`
+via `stream.Err()`):
+
+```go
+stream, err := client.Chat.Completions.CreateStream(ctx, &audacityruntime.ChatCompletionCreateParams{
+    Model:    "gpt-5.4-mini",
+    Messages: []map[string]interface{}{{"role": "user", "content": "Tell me a story"}},
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer stream.Close()
+
+for chunk := range stream.Events() { // chunk is map[string]interface{}, untranslated
+    if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+        delta := choices[0].(map[string]interface{})["delta"].(map[string]interface{})
+        if content, ok := delta["content"].(string); ok {
+            fmt.Print(content)
+        }
+    }
+}
+if err := stream.Err(); err != nil {
+    log.Fatal(err)
+}
+```
+
+### Anthropic format
+
+The wire format used by the anthropic SDKs and Claude Code — and not limited
+to Claude models. Requests carry the `anthropic-version: 2023-06-01` header
+automatically:
+
+```go
+resp, err := client.Messages.Create(ctx, &audacityruntime.MessageCreateParams{
+    Model:     "claude-sonnet-4-6",
+    MaxTokens: 500,
+    Messages:  []map[string]interface{}{{"role": "user", "content": "Hello!"}},
+    System:    "Be brief.",
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(resp.Content[0]["text"]) // raw Anthropic shape
+fmt.Println(resp.StopReason)         // "end_turn"
+```
+
+Streaming yields raw Anthropic events (`message_start` … `message_stop`);
+there is no `[DONE]` — a healthy stream ends with `message_stop` followed by
+EOF, and EOF before `message_stop` (or an `error` event) surfaces via
+`stream.Err()`:
+
+```go
+stream, err := client.Messages.CreateStream(ctx, &audacityruntime.MessageCreateParams{
+    Model:     "claude-sonnet-4-6",
+    MaxTokens: 500,
+    Messages:  []map[string]interface{}{{"role": "user", "content": "Tell me a story"}},
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer stream.Close()
+
+for event := range stream.Events() { // event is map[string]interface{}, untranslated
+    if event["type"] == "content_block_delta" {
+        delta := event["delta"].(map[string]interface{})
+        if text, ok := delta["text"].(string); ok {
+            fmt.Print(text)
+        }
+    }
+}
+if err := stream.Err(); err != nil {
+    log.Fatal(err)
+}
+```
+
+Token counting is free — no inference happens:
+
+```go
+count, err := client.Messages.CountTokens(ctx, &audacityruntime.CountTokensParams{
+    Model:    "claude-sonnet-4-6",
+    Messages: []map[string]interface{}{{"role": "user", "content": "How many tokens is this?"}},
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(count.InputTokens)
+```
+
+Errors on all three routes map to the same typed exceptions as `Converse`
+(429 → `*types.ThrottlingException` and retried, 401 →
+`*types.AccessDeniedException`, spend cap → `*types.ServiceQuotaExceededException`),
+including the gateway's Anthropic-shaped error envelopes.
 
 ---
 
@@ -401,14 +532,15 @@ attempts, with the budget resetting every time a chunk is confirmed. Other
 
 ## Image generation
 
-Generate images from a text prompt with `GenerateImage`:
+Generate images from a text prompt with `GenerateImage`. With
+`ResponseFormat` `"b64_json"` the image bytes come back inline:
 
 ```go
 out, err := client.GenerateImage(ctx, &audacityruntime.GenerateImageInput{
     Model:          audacity.String("gpt-image-1"),
     Prompt:         audacity.String("A watercolor painting of a fox in a snowy forest"),
     Size:           audacity.String("1024x1024"),
-    ResponseFormat: audacity.String("b64_json"), // or "url" (default) for a signed link
+    ResponseFormat: audacity.String("b64_json"),
 })
 if err != nil {
     log.Fatal(err)
@@ -419,7 +551,20 @@ if err != nil {
     log.Fatal(err)
 }
 os.WriteFile("fox.png", img, 0o644)
-// With ResponseFormat "url": out.Data[0].Url (signed link, expires ~24 h)
+```
+
+With `ResponseFormat` `"url"` (the default) the gateway stores the image and
+returns a signed download URL that expires after ~24 hours:
+
+```go
+out, err := client.GenerateImage(ctx, &audacityruntime.GenerateImageInput{
+    Model:  audacity.String("imagen-4"),
+    Prompt: audacity.String("A watercolor painting of a fox in a snowy forest"),
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(out.Data[0].Url) // signed download URL, valid ~24 h
 ```
 
 Optional fields: `N` (1–10 images), `Size` (`"WxH"`, model-dependent),
@@ -429,6 +574,27 @@ when the provider rewrites your prompt) and optional `Usage` token counts.
 Errors map to the same typed errors as `Converse` (401 →
 `*types.AccessDeniedException`, 429 → `*types.ThrottlingException`, spend cap
 → `*types.ServiceQuotaExceededException`), usable with `errors.As`.
+
+### Image models
+
+| Model | Pricing |
+|------|---------|
+| `imagen-4` | $0.04 / image |
+| `imagen-4-fast` | $0.02 / image |
+| `imagen-4-ultra` | $0.06 / image |
+| `gemini-2.5-flash-image` | token-based (≈ $0.039 / image) |
+| `gpt-image-1` | token-based ($5.00 / 1M text input, $40.00 / 1M image output tokens) |
+
+Per-image models bill a flat rate per generated image; token-based models
+report token counts in `GenerateImageOutput.Usage`. Each request's cost is
+recorded against your key like any other API call.
+
+**Reliability note.** Upstream image backends occasionally stall with a 503
+for a few minutes. There is deliberately **no automatic fallback** to a
+different image model (silently swapping models would change output style and
+quality) — the SDK already retries 503s with backoff up to
+`Options.MaxRetries`, and callers should retry beyond that rather than switch
+models.
 
 ---
 
@@ -471,7 +637,7 @@ A cache point with nothing before it in the same message is silently ignored.
 
 ```go
 client := audacityruntime.New(audacityruntime.Options{
-    APIKey:     "audacity_api_…",         // falls back to AUDACITY_API_KEY
+    APIKey:     "aireserve_api_…",         // falls back to AUDACITY_API_KEY
     BaseURL:    "https://…",              // falls back to AUDACITY_BASE_URL, then default
     HTTPClient: &http.Client{…},          // custom transport / TLS config
     MaxRetries: 3,                        // additional attempts (0 = default 2 → 3 total;

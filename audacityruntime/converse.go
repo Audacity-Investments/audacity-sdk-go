@@ -65,7 +65,7 @@ func (c *Client) Converse(ctx context.Context, input *ConverseInput) (*ConverseO
 		return nil, err
 	}
 
-	respBody, latencyMs, err := c.doConverseWithRetry(ctx, body)
+	respBody, latencyMs, err := c.doJSONWithRetry(ctx, "/v1/chat/completions", body, nil)
 	if err != nil {
 		return nil, err
 	}

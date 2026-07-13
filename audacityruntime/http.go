@@ -1,10 +1,12 @@
 package audacityruntime
 
-// http.go — low-level HTTP execution helpers used by Converse and ConverseStream.
+// http.go — low-level HTTP execution helpers used by Converse, ConverseStream,
+// and the §9 pass-through surfaces.
 //
 // Timeout semantics (spec §1): the configured timeout bounds each attempt's
-// connection + request write + response headers, and — for Converse only —
-// the full response body read.  The SSE body of a stream is never bounded.
+// connection + request write + response headers, and — for non-streaming
+// operations only — the full response body read.  The SSE body of a stream is
+// never bounded.
 
 import (
 	"bytes"
@@ -16,10 +18,11 @@ import (
 	"github.com/Audacity-Investments/audacity-sdk-go/audacityruntime/types"
 )
 
-// doRequest executes a single HTTP POST to the completions endpoint and returns
-// the raw *http.Response (caller is responsible for closing the body).
-func (c *Client) doRequest(ctx context.Context, body []byte, accept string) (*http.Response, error) {
-	url := c.options.BaseURL + "/v1/chat/completions"
+// doRequest executes a single HTTP POST to a gateway path and returns the raw
+// *http.Response (caller is responsible for closing the body).  extraHeaders
+// are set after the standard headers (e.g. anthropic-version — spec §9).
+func (c *Client) doRequest(ctx context.Context, path string, body []byte, accept string, extraHeaders map[string]string) (*http.Response, error) {
+	url := c.options.BaseURL + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, &types.SdkError{Message: "failed to create HTTP request", Err: err}
@@ -28,6 +31,9 @@ func (c *Client) doRequest(ctx context.Context, body []byte, accept string) (*ht
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", userAgent)
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -83,15 +89,15 @@ func (c *Client) doWithRetry(ctx context.Context, attempt func(context.Context) 
 	return lastErr
 }
 
-// doConverseWithRetry executes a non-streaming request with the configured
+// doJSONWithRetry executes a non-streaming request with the configured
 // retry policy and returns the fully-read response body plus the elapsed
 // wall-clock latency.  The per-attempt timeout covers the full body read.
-func (c *Client) doConverseWithRetry(ctx context.Context, body []byte) ([]byte, int64, error) {
+func (c *Client) doJSONWithRetry(ctx context.Context, path string, body []byte, extraHeaders map[string]string) ([]byte, int64, error) {
 	start := time.Now()
 	var respBody []byte
 	err := c.doWithRetry(ctx, func(ctx context.Context) error {
 		var err error
-		respBody, err = c.converseAttempt(ctx, body)
+		respBody, err = c.jsonAttempt(ctx, path, body, extraHeaders)
 		return err
 	})
 	if err != nil {
@@ -100,9 +106,9 @@ func (c *Client) doConverseWithRetry(ctx context.Context, body []byte) ([]byte, 
 	return respBody, time.Since(start).Milliseconds(), nil
 }
 
-// converseAttempt performs one non-streaming attempt, bounded end-to-end
+// jsonAttempt performs one non-streaming attempt, bounded end-to-end
 // (headers + body) by the configured timeout.
-func (c *Client) converseAttempt(ctx context.Context, body []byte) ([]byte, error) {
+func (c *Client) jsonAttempt(ctx context.Context, path string, body []byte, extraHeaders map[string]string) ([]byte, error) {
 	actx := ctx
 	var cancel context.CancelFunc = func() {}
 	if c.options.Timeout > 0 {
@@ -110,7 +116,7 @@ func (c *Client) converseAttempt(ctx context.Context, body []byte) ([]byte, erro
 	}
 	defer cancel()
 
-	resp, err := c.doRequest(actx, body, "application/json")
+	resp, err := c.doRequest(actx, path, body, "application/json", extraHeaders)
 	if err != nil {
 		return nil, err
 	}
@@ -135,14 +141,14 @@ func (c *Client) converseAttempt(ctx context.Context, body []byte) ([]byte, erro
 // indefinitely, so on success the live response is returned together with the
 // stream's context and its cancel func, which the caller MUST eventually
 // invoke to release resources.
-func (c *Client) streamAttempt(ctx context.Context, body []byte) (*http.Response, context.Context, context.CancelFunc, error) {
+func (c *Client) streamAttempt(ctx context.Context, path string, body []byte, extraHeaders map[string]string) (*http.Response, context.Context, context.CancelFunc, error) {
 	sctx, cancel := context.WithCancel(ctx)
 	var headerTimer *time.Timer
 	if c.options.Timeout > 0 {
 		headerTimer = time.AfterFunc(c.options.Timeout, cancel)
 	}
 
-	resp, err := c.doRequest(sctx, body, "text/event-stream")
+	resp, err := c.doRequest(sctx, path, body, "text/event-stream", extraHeaders)
 	if headerTimer != nil {
 		headerTimer.Stop()
 	}
@@ -162,9 +168,9 @@ func (c *Client) streamAttempt(ctx context.Context, body []byte) (*http.Response
 	return resp, sctx, cancel, nil
 }
 
-// doConverseStreamWithRetry executes a streaming request, retrying only until
+// doStreamWithRetry executes a streaming request, retrying only until
 // HTTP status + headers are received.
-func (c *Client) doConverseStreamWithRetry(ctx context.Context, body []byte) (*http.Response, context.Context, context.CancelFunc, time.Time, error) {
+func (c *Client) doStreamWithRetry(ctx context.Context, path string, body []byte, extraHeaders map[string]string) (*http.Response, context.Context, context.CancelFunc, time.Time, error) {
 	start := time.Now()
 	var (
 		resp   *http.Response
@@ -173,7 +179,7 @@ func (c *Client) doConverseStreamWithRetry(ctx context.Context, body []byte) (*h
 	)
 	err := c.doWithRetry(ctx, func(ctx context.Context) error {
 		var err error
-		resp, sctx, cancel, err = c.streamAttempt(ctx, body)
+		resp, sctx, cancel, err = c.streamAttempt(ctx, path, body, extraHeaders)
 		return err
 	})
 	if err != nil {

@@ -124,7 +124,7 @@ func (c *Client) ConverseStream(ctx context.Context, input *ConverseStreamInput)
 		return nil, err
 	}
 
-	resp, sctx, cancel, startTime, err := c.doConverseStreamWithRetry(ctx, body)
+	resp, sctx, cancel, startTime, err := c.doStreamWithRetry(ctx, "/v1/chat/completions", body, nil)
 	if err != nil {
 		return nil, err
 	}
