@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	defaultBaseURL    = "https://portal.audacityinvestments.com"
+	defaultBaseURL    = "https://api.audacityinvestments.com"
 	defaultTimeout    = 120 * time.Second
 	defaultMaxRetries = 2
-	sdkVersion        = "0.5.0"
+	sdkVersion        = "0.5.1"
 	userAgent         = "audacity-sdk-go/" + sdkVersion
 )
 
@@ -37,7 +37,7 @@ type Options struct {
 	APIKey string
 
 	// BaseURL overrides the default API endpoint.
-	// Falls back to AUDACITY_BASE_URL, then https://portal.audacityinvestments.com.
+	// Falls back to AUDACITY_BASE_URL, then https://api.audacityinvestments.com.
 	BaseURL string
 
 	// HTTPClient replaces the default http.Client.  The SDK never sets

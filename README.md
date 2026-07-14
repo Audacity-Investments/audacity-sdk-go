@@ -6,7 +6,7 @@ the constructor, and keep the rest of your code.
 
 - Module: `github.com/Audacity-Investments/audacity-sdk-go`
 - Go 1.22+, **stdlib only** (`net/http`, `encoding/json`, `bufio`)
-- Version: `0.5.0`
+- Version: `0.5.1`
 
 ---
 
@@ -24,7 +24,7 @@ go get github.com/Audacity-Investments/audacity-sdk-go
 |----------|--------|
 | 1 | Explicit `Options` field |
 | 2 | `AUDACITY_API_KEY` / `AUDACITY_BASE_URL` environment variables |
-| 3 | Defaults: `baseURL=https://portal.audacityinvestments.com`, `timeout=120s`, `maxRetries=2` |
+| 3 | Defaults: `baseURL=https://api.audacityinvestments.com`, `timeout=120s`, `maxRetries=2` |
 
 A missing API key causes `Converse`/`ConverseStream` to return `*types.MissingAPIKeyError`
 immediately, before any network call.
