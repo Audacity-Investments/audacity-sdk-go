@@ -1,0 +1,66 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+jobs:
+  review:
+    # Skip draft PRs; they get reviewed when marked ready for review.
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full history so the reviewer can search the whole repo for
+          # duplication and cross-system conflicts, not just the diff.
+          fetch-depth: 0
+
+      - name: Claude review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are reviewing this pull request. Analyze the PR diff AND the
+            surrounding codebase (the full repository is checked out — search
+            it), then post exactly ONE structured review comment on the PR
+            using `gh pr comment`.
+
+            The comment must contain one section per criterion, in this order:
+
+            1. **Code review** — correctness, readability, error handling,
+               and test coverage of the changed code.
+            2. **Security review** — injection, authz/authn issues, secret
+               handling, unsafe deserialization, and dependency risks
+               introduced by the diff.
+            3. **Performance review** — algorithmic complexity,
+               allocations/copies in hot paths, N+1 patterns, unnecessary I/O.
+            4. **System design best practices** — API design, separation of
+               concerns, backwards compatibility, idiomatic Go for this repo.
+            5. **Observability** — are new code paths adequately
+               logged/instrumented; are errors surfaced with enough context.
+            6. **Code duplication** — search the rest of the repository for
+               existing helpers/concepts that duplicate what the PR adds;
+               cite file paths.
+            7. **Cross-system conflicts** — does the PR's change or stated
+               intent conflict with behavior, assumptions, or invariants
+               elsewhere in the codebase; cite file paths.
+
+            Rules for the review:
+            - Be concrete: reference findings as file:line.
+            - Start each section with a verdict: ✅ ok / ⚠️ concerns /
+              ❌ blocking.
+            - Keep any section with no findings to a single line.
+            - End with an overall summary verdict for the PR.
+          claude_args: |
+            --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
