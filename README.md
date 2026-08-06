@@ -558,7 +558,7 @@ returns a signed download URL that expires after ~24 hours:
 
 ```go
 out, err := client.GenerateImage(ctx, &audacityruntime.GenerateImageInput{
-    Model:  audacity.String("imagen-4"),
+    Model:  audacity.String("gemini-2.5-flash-image"),
     Prompt: audacity.String("A watercolor painting of a fox in a snowy forest"),
 })
 if err != nil {
@@ -579,9 +579,6 @@ Errors map to the same typed errors as `Converse` (401 →
 
 | Model | Pricing |
 |------|---------|
-| `imagen-4` | $0.04 / image |
-| `imagen-4-fast` | $0.02 / image |
-| `imagen-4-ultra` | $0.06 / image |
 | `gemini-2.5-flash-image` | token-based (≈ $0.039 / image) |
 | `gpt-image-1` | token-based ($5.00 / 1M text input, $40.00 / 1M image output tokens) |
 

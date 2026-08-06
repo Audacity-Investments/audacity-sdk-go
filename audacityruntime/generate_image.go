@@ -14,8 +14,8 @@ import (
 
 // GenerateImageInput is the input to the GenerateImage operation.
 type GenerateImageInput struct {
-	// Model is the image model id (e.g. "gpt-image-1", "dall-e-3",
-	// "imagen-4").  Required.
+	// Model is the image model id (e.g. "gpt-image-1",
+	// "gemini-2.5-flash-image").  Required.
 	Model *string
 
 	// Prompt is the text description of the desired image(s);
