@@ -1,4 +1,4 @@
-// Live smoke test: AUDACITY_API_KEY=… go run ./examples/smoke
+// Live smoke test: AIRESERVE_API_KEY=… go run ./examples/smoke
 package main
 
 import (

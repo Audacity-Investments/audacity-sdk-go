@@ -383,7 +383,8 @@ func TestDefensiveUnwrap(t *testing.T) {
 // ─────────────────────────────────────────────────────────────
 
 func TestMissingAPIKey(t *testing.T) {
-	// Ensure AUDACITY_API_KEY env var doesn't satisfy the key requirement.
+	// Ensure neither API-key env var satisfies the key requirement.
+	t.Setenv("AIRESERVE_API_KEY", "")
 	t.Setenv("AUDACITY_API_KEY", "")
 	client := audacityruntime.New(audacityruntime.Options{
 		APIKey:  "",
@@ -397,6 +398,97 @@ func TestMissingAPIKey(t *testing.T) {
 	if !errors.As(err, &missingKey) {
 		t.Errorf("expected MissingAPIKeyError, got %T: %v", err, err)
 	}
+}
+
+// ─────────────────────────────────────────────────────────────
+// Configuration resolution — AIRESERVE_* preferred, legacy AUDACITY_* fallback
+// ─────────────────────────────────────────────────────────────
+
+func TestEnvVarPrecedence(t *testing.T) {
+	newAuthCaptureServer := func(t *testing.T) (*httptest.Server, func() string) {
+		t.Helper()
+		var mu sync.Mutex
+		var gotAuth string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			gotAuth = r.Header.Get("Authorization")
+			mu.Unlock()
+			jsonResponse(t, w, 200, map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"index": 0, "finish_reason": "stop",
+					"message": map[string]interface{}{"role": "assistant", "content": "ok"},
+				}},
+				"usage": map[string]interface{}{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+			})
+		}))
+		t.Cleanup(srv.Close)
+		return srv, func() string {
+			mu.Lock()
+			defer mu.Unlock()
+			return gotAuth
+		}
+	}
+
+	converse := func(t *testing.T, client *audacityruntime.Client) {
+		t.Helper()
+		if _, err := client.Converse(context.Background(), &audacityruntime.ConverseInput{
+			ModelId:  audacity.String("gpt-5.4-mini"),
+			Messages: []types.Message{{Role: types.ConversationRoleUser, Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: "hi"}}}},
+		}); err != nil {
+			t.Fatalf("Converse error: %v", err)
+		}
+	}
+
+	t.Run("AIRESERVE_API_KEY wins over legacy AUDACITY_API_KEY", func(t *testing.T) {
+		srv, gotAuth := newAuthCaptureServer(t)
+		t.Setenv("AIRESERVE_API_KEY", "new-key")
+		t.Setenv("AUDACITY_API_KEY", "legacy-key")
+		converse(t, audacityruntime.New(audacityruntime.Options{BaseURL: srv.URL}))
+		if got := gotAuth(); got != "Bearer new-key" {
+			t.Errorf("Authorization = %q, want Bearer new-key", got)
+		}
+	})
+
+	t.Run("legacy AUDACITY_API_KEY still works", func(t *testing.T) {
+		srv, gotAuth := newAuthCaptureServer(t)
+		t.Setenv("AIRESERVE_API_KEY", "")
+		t.Setenv("AUDACITY_API_KEY", "legacy-key")
+		converse(t, audacityruntime.New(audacityruntime.Options{BaseURL: srv.URL}))
+		if got := gotAuth(); got != "Bearer legacy-key" {
+			t.Errorf("Authorization = %q, want Bearer legacy-key", got)
+		}
+	})
+
+	t.Run("explicit APIKey wins over both env vars", func(t *testing.T) {
+		srv, gotAuth := newAuthCaptureServer(t)
+		t.Setenv("AIRESERVE_API_KEY", "new-key")
+		t.Setenv("AUDACITY_API_KEY", "legacy-key")
+		converse(t, audacityruntime.New(audacityruntime.Options{APIKey: "explicit-key", BaseURL: srv.URL}))
+		if got := gotAuth(); got != "Bearer explicit-key" {
+			t.Errorf("Authorization = %q, want Bearer explicit-key", got)
+		}
+	})
+
+	t.Run("AIRESERVE_BASE_URL wins over legacy AUDACITY_BASE_URL", func(t *testing.T) {
+		srv, _ := newAuthCaptureServer(t)
+		t.Setenv("AIRESERVE_BASE_URL", srv.URL)
+		t.Setenv("AUDACITY_BASE_URL", "http://127.0.0.1:1") // nothing listens here
+		converse(t, audacityruntime.New(audacityruntime.Options{APIKey: "k", MaxRetries: audacityruntime.NoRetries}))
+	})
+
+	t.Run("legacy AUDACITY_BASE_URL still works", func(t *testing.T) {
+		srv, _ := newAuthCaptureServer(t)
+		t.Setenv("AIRESERVE_BASE_URL", "")
+		t.Setenv("AUDACITY_BASE_URL", srv.URL)
+		converse(t, audacityruntime.New(audacityruntime.Options{APIKey: "k", MaxRetries: audacityruntime.NoRetries}))
+	})
+
+	t.Run("explicit BaseURL wins over both env vars", func(t *testing.T) {
+		srv, _ := newAuthCaptureServer(t)
+		t.Setenv("AIRESERVE_BASE_URL", "http://127.0.0.1:1")
+		t.Setenv("AUDACITY_BASE_URL", "http://127.0.0.1:1")
+		converse(t, audacityruntime.New(audacityruntime.Options{APIKey: "k", BaseURL: srv.URL, MaxRetries: audacityruntime.NoRetries}))
+	})
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -207,6 +207,7 @@ func TestChatCompletionsCreateValidation(t *testing.T) {
 		t.Error("expected error for missing messages")
 	}
 
+	t.Setenv("AIRESERVE_API_KEY", "")
 	t.Setenv("AUDACITY_API_KEY", "")
 	missing := audacityruntime.New(audacityruntime.Options{BaseURL: "http://unused.invalid"})
 	var missingKey *types.MissingAPIKeyError

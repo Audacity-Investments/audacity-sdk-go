@@ -23,16 +23,20 @@ go get github.com/Audacity-Investments/audacity-sdk-go
 | Priority | Source |
 |----------|--------|
 | 1 | Explicit `Options` field |
-| 2 | `AUDACITY_API_KEY` / `AUDACITY_BASE_URL` environment variables |
-| 3 | Defaults: `baseURL=https://api.audacityinvestments.com`, `timeout=120s`, `maxRetries=2` |
+| 2 | `AIRESERVE_API_KEY` / `AIRESERVE_BASE_URL` environment variables |
+| 3 | Legacy `AUDACITY_API_KEY` / `AUDACITY_BASE_URL` environment variables |
+| 4 | Defaults: `baseURL=https://api.audacityinvestments.com`, `timeout=120s`, `maxRetries=2` |
 
 A missing API key causes `Converse`/`ConverseStream` to return `*types.MissingAPIKeyError`
 immediately, before any network call.
 
 | Variable | Purpose |
 |----------|---------|
-| `AUDACITY_API_KEY` | API key (`aireserve_api_…`) |
-| `AUDACITY_BASE_URL` | Override the default endpoint |
+| `AIRESERVE_API_KEY` | API key (`aireserve_api_…`) |
+| `AIRESERVE_BASE_URL` | Override the default endpoint |
+
+The legacy `AUDACITY_*` names still work as fallbacks; when both are set, the
+`AIRESERVE_*` names win.
 
 ---
 
@@ -54,7 +58,7 @@ import (
 )
 
 func main() {
-    // Reads AUDACITY_API_KEY from the environment.
+    // Reads AIRESERVE_API_KEY (or legacy AUDACITY_API_KEY) from the environment.
     client := audacityruntime.New(audacityruntime.Options{})
 
     resp, err := client.Converse(context.Background(), &audacityruntime.ConverseInput{
@@ -271,7 +275,7 @@ including the gateway's Anthropic-shaped error envelopes.
  )
 
 -client := bedrockruntime.NewFromConfig(cfg)
-+client := audacityruntime.New(audacityruntime.Options{})  // reads AUDACITY_API_KEY
++client := audacityruntime.New(audacityruntime.Options{})  // reads AIRESERVE_API_KEY
 
  resp, err := client.Converse(ctx, &audacityruntime.ConverseInput{
 -    ModelId: aws.String("anthropic.claude-3-5-sonnet-20241022-v2:0"),
@@ -300,7 +304,7 @@ switch {
 case err == nil:
     // success
 case errors.Is(err, &types.MissingAPIKeyError{}):
-    log.Fatal("set AUDACITY_API_KEY")
+    log.Fatal("set AIRESERVE_API_KEY")
 default:
     var throttle *types.ThrottlingException
     var quota *types.ServiceQuotaExceededException
@@ -634,8 +638,8 @@ A cache point with nothing before it in the same message is silently ignored.
 
 ```go
 client := audacityruntime.New(audacityruntime.Options{
-    APIKey:     "aireserve_api_…",         // falls back to AUDACITY_API_KEY
-    BaseURL:    "https://…",              // falls back to AUDACITY_BASE_URL, then default
+    APIKey:     "aireserve_api_…",         // falls back to AIRESERVE_API_KEY, then legacy AUDACITY_API_KEY
+    BaseURL:    "https://…",              // falls back to AIRESERVE_BASE_URL (legacy AUDACITY_BASE_URL), then default
     HTTPClient: &http.Client{…},          // custom transport / TLS config
     MaxRetries: 3,                        // additional attempts (0 = default 2 → 3 total;
                                           // audacityruntime.NoRetries disables retries)
