@@ -96,11 +96,12 @@ type InternalServerException struct{ APIError }
 func (e *InternalServerException) Unwrap() error { return &e.APIError }
 
 // MissingAPIKeyError is returned immediately (before any network call) when no API
-// key is available via the explicit option or the AUDACITY_API_KEY environment variable.
+// key is available via the explicit option or the AIRESERVE_API_KEY environment
+// variable (the legacy AUDACITY_API_KEY is also read).
 type MissingAPIKeyError struct{}
 
 func (*MissingAPIKeyError) Error() string {
-	return "missing API key: set AUDACITY_API_KEY environment variable or provide APIKey in Options"
+	return "missing API key: set AIRESERVE_API_KEY environment variable (legacy AUDACITY_API_KEY also works) or provide APIKey in Options"
 }
 
 // SdkError wraps network-level or response-decode failures.

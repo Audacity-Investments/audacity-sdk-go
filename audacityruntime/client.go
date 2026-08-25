@@ -29,15 +29,17 @@ const NoRetries int = -1
 //
 // Resolution order for each field:
 //  1. Explicit value in Options.
-//  2. Environment variable (AUDACITY_API_KEY / AUDACITY_BASE_URL).
+//  2. Environment variable (AIRESERVE_API_KEY / AIRESERVE_BASE_URL; the
+//     legacy AUDACITY_API_KEY / AUDACITY_BASE_URL names still work).
 //  3. Built-in default.
 type Options struct {
-	// APIKey is the Audacity API key (e.g. "audacity_api_…").
-	// Falls back to AUDACITY_API_KEY.
+	// APIKey is the AI Reserve API key (e.g. "aireserve_api_…").
+	// Falls back to AIRESERVE_API_KEY, then the legacy AUDACITY_API_KEY.
 	APIKey string
 
 	// BaseURL overrides the default API endpoint.
-	// Falls back to AUDACITY_BASE_URL, then https://api.audacityinvestments.com.
+	// Falls back to AIRESERVE_BASE_URL (legacy AUDACITY_BASE_URL), then
+	// https://api.audacityinvestments.com.
 	BaseURL string
 
 	// HTTPClient replaces the default http.Client.  The SDK never sets
@@ -84,7 +86,13 @@ type Client struct {
 // will produce a types.MissingAPIKeyError on the first operation.
 func New(opts Options) *Client {
 	if opts.APIKey == "" {
+		opts.APIKey = os.Getenv("AIRESERVE_API_KEY")
+	}
+	if opts.APIKey == "" {
 		opts.APIKey = os.Getenv("AUDACITY_API_KEY")
+	}
+	if opts.BaseURL == "" {
+		opts.BaseURL = os.Getenv("AIRESERVE_BASE_URL")
 	}
 	if opts.BaseURL == "" {
 		opts.BaseURL = os.Getenv("AUDACITY_BASE_URL")

@@ -605,6 +605,7 @@ func TestStreamRetryBefore429(t *testing.T) {
 // ─────────────────────────────────────────────────────────────
 
 func TestMissingAPIKeyStream(t *testing.T) {
+	t.Setenv("AIRESERVE_API_KEY", "")
 	t.Setenv("AUDACITY_API_KEY", "")
 	client := audacityruntime.New(audacityruntime.Options{
 		APIKey:  "",
