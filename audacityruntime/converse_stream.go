@@ -42,6 +42,12 @@ type ConverseStreamInput struct {
 	// ToolConfig provides tool definitions and the tool-choice policy.
 	ToolConfig *types.ToolConfiguration
 
+	// GuardrailConfig mirrors Bedrock's guardrail configuration. Forwarded
+	// verbatim as the top-level guardrailConfig field — the gateway rejects
+	// Bedrock guardrails with an honest 400 rather than the SDK silently
+	// dropping the field.
+	GuardrailConfig *types.GuardrailConfiguration
+
 	// AdditionalModelRequestFields is shallow-merged into the request body last.
 	AdditionalModelRequestFields map[string]interface{}
 }

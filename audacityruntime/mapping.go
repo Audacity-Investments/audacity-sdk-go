@@ -159,6 +159,26 @@ func buildRequestBody(input *ConverseInput, stream bool) ([]byte, error) {
 		body["media_resolution"] = string(input.MediaResolution)
 	}
 
+	// §3 rule 4 — guardrailConfig forwarded verbatim (omit absent members,
+	// omit the key when unset): the gateway rejects Bedrock guardrails with
+	// an honest 400, and that rejection must reach the caller.
+	if gc := input.GuardrailConfig; gc != nil {
+		guardrail := map[string]interface{}{}
+		if gc.GuardrailIdentifier != nil {
+			guardrail["guardrailIdentifier"] = *gc.GuardrailIdentifier
+		}
+		if gc.GuardrailVersion != nil {
+			guardrail["guardrailVersion"] = *gc.GuardrailVersion
+		}
+		if gc.Trace != "" {
+			guardrail["trace"] = string(gc.Trace)
+		}
+		if gc.StreamProcessingMode != "" {
+			guardrail["streamProcessingMode"] = string(gc.StreamProcessingMode)
+		}
+		body["guardrailConfig"] = guardrail
+	}
+
 	// §3 rule 5 — toolConfig
 	if tc := input.ToolConfig; tc != nil && len(tc.Tools) > 0 {
 		tools := make([]map[string]interface{}, 0, len(tc.Tools))

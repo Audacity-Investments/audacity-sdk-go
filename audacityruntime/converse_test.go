@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -646,6 +647,96 @@ func TestMediaResolution(t *testing.T) {
 		})
 		if v, ok := body["media_resolution"]; ok {
 			t.Errorf("media_resolution present = %v, want key absent", v)
+		}
+	})
+}
+
+// ─────────────────────────────────────────────────────────────
+// Checklist item 20 — guardrailConfig passthrough (AIR-731)
+// ─────────────────────────────────────────────────────────────
+
+func TestGuardrailConfig(t *testing.T) {
+	captureBody := func(t *testing.T, input *audacityruntime.ConverseInput) map[string]interface{} {
+		t.Helper()
+		var got map[string]interface{}
+		handler := func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Errorf("parse request body: %v", err)
+			}
+			jsonResponse(t, w, 200, map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"index": 0, "finish_reason": "stop",
+					"message": map[string]interface{}{"role": "assistant", "content": "ok"},
+				}},
+				"usage": map[string]interface{}{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+			})
+		}
+		client, _ := newTestClient(t, handler)
+		if _, err := client.Converse(context.Background(), input); err != nil {
+			t.Fatalf("Converse error: %v", err)
+		}
+		return got
+	}
+
+	messages := []types.Message{{
+		Role:    types.ConversationRoleUser,
+		Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: "Hi"}},
+	}}
+
+	t.Run("forwarded verbatim", func(t *testing.T) {
+		body := captureBody(t, &audacityruntime.ConverseInput{
+			ModelId:  audacity.String("claude-sonnet-4-6"),
+			Messages: messages,
+			GuardrailConfig: &types.GuardrailConfiguration{
+				GuardrailIdentifier:  audacity.String("gr-abc123"),
+				GuardrailVersion:     audacity.String("1"),
+				Trace:                types.GuardrailTraceEnabled,
+				StreamProcessingMode: types.GuardrailStreamProcessingModeSync,
+			},
+		})
+		want := map[string]interface{}{
+			"guardrailIdentifier":  "gr-abc123",
+			"guardrailVersion":     "1",
+			"trace":                "enabled",
+			"streamProcessingMode": "sync",
+		}
+		got, ok := body["guardrailConfig"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("guardrailConfig = %v (%T), want object", body["guardrailConfig"], body["guardrailConfig"])
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("guardrailConfig = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("absent optional members omitted", func(t *testing.T) {
+		body := captureBody(t, &audacityruntime.ConverseInput{
+			ModelId:  audacity.String("claude-sonnet-4-6"),
+			Messages: messages,
+			GuardrailConfig: &types.GuardrailConfiguration{
+				GuardrailIdentifier: audacity.String("gr-abc123"),
+				GuardrailVersion:    audacity.String("1"),
+			},
+		})
+		got, ok := body["guardrailConfig"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("guardrailConfig = %v (%T), want object", body["guardrailConfig"], body["guardrailConfig"])
+		}
+		for _, key := range []string{"trace", "streamProcessingMode"} {
+			if v, present := got[key]; present {
+				t.Errorf("%s present = %v, want omitted", key, v)
+			}
+		}
+	})
+
+	t.Run("absent when unset", func(t *testing.T) {
+		body := captureBody(t, &audacityruntime.ConverseInput{
+			ModelId:  audacity.String("claude-sonnet-4-6"),
+			Messages: messages,
+		})
+		if v, ok := body["guardrailConfig"]; ok {
+			t.Errorf("guardrailConfig present = %v, want key absent", v)
 		}
 	})
 }

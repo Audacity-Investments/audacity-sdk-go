@@ -235,6 +235,46 @@ const (
 	MediaResolutionUltraHigh MediaResolution = "ultra_high"
 )
 
+// GuardrailTrace is Bedrock's guardrail trace mode.
+type GuardrailTrace string
+
+const (
+	GuardrailTraceEnabled     GuardrailTrace = "enabled"
+	GuardrailTraceDisabled    GuardrailTrace = "disabled"
+	GuardrailTraceEnabledFull GuardrailTrace = "enabled_full"
+)
+
+// GuardrailStreamProcessingMode is Bedrock's guardrail stream-processing
+// mode (ConverseStream only).
+type GuardrailStreamProcessingMode string
+
+const (
+	GuardrailStreamProcessingModeSync  GuardrailStreamProcessingMode = "sync"
+	GuardrailStreamProcessingModeAsync GuardrailStreamProcessingMode = "async"
+)
+
+// GuardrailConfiguration mirrors Bedrock Converse's guardrail configuration
+// (migration-parity shape). It is forwarded to the gateway verbatim as the
+// top-level guardrailConfig request field: the gateway does not run Bedrock
+// guardrails and rejects any request carrying it with an honest 400 that
+// explains the managed-moderation alternative. The SDK never drops or
+// rewrites the field (spec §3).
+type GuardrailConfiguration struct {
+	// GuardrailIdentifier is the guardrail ID or ARN (required by Bedrock).
+	GuardrailIdentifier *string
+
+	// GuardrailVersion is the guardrail version, e.g. "1" or "DRAFT"
+	// (required by Bedrock).
+	GuardrailVersion *string
+
+	// Trace enables guardrail tracing. Omitted when empty.
+	Trace GuardrailTrace
+
+	// StreamProcessingMode selects sync/async guardrail evaluation on
+	// ConverseStream (Bedrock parity). Omitted when empty.
+	StreamProcessingMode GuardrailStreamProcessingMode
+}
+
 // ToolInputSchema wraps a JSON Schema object for a tool's input.
 type ToolInputSchema struct {
 	Json interface{} // JSON Schema object
