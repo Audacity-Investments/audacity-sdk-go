@@ -1,0 +1,36 @@
+# Minimal CI (AIR-1097). This repo is the published Go module mirror:
+# audacity-sdk's publish-go-sdk workflow vets/tests the source and then
+# pushes directly to main here. This workflow re-verifies each mirrored
+# push and gates the rare manual PR (docs/automation fixes).
+#
+# Do NOT make this a required status check without a bypass for the
+# release app (aireserve-release-bot) - required status checks would
+# reject the mirror's direct push to main and break Go releases.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.22"
+          # stdlib-only module: no go.sum to key a dependency cache on
+          cache: false
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race detector)
+        run: go test -race ./...
