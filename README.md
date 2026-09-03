@@ -584,6 +584,7 @@ Errors map to the same typed errors as `Converse` (401 →
 | Model | Pricing |
 |------|---------|
 | `gemini-2.5-flash-image` | token-based (≈ $0.039 / image) |
+| `gemini-3.1-flash-image` | token-based + $0.067 / 1K image |
 | `gpt-image-1` | token-based ($5.00 / 1M text input, $40.00 / 1M image output tokens) |
 
 Per-image models bill a flat rate per generated image; token-based models
